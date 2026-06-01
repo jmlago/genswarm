@@ -287,6 +287,8 @@ defmodule SubzeroclawSwarm.Config.SwarmConfig do
 
   defp validate_backend({:ssh, host}) when is_binary(host), do: :ok
   defp validate_backend({:ssh, host, opts}) when is_binary(host) and is_map(opts), do: :ok
+  defp validate_backend(:mock), do: :ok
+  defp validate_backend({:mock, opts}) when is_map(opts), do: :ok
   defp validate_backend(backend), do: {:error, {:invalid_backend, backend}}
 
   defp validate_skills(%{skills: skills}) when is_list(skills) do

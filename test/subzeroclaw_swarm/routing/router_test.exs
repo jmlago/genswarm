@@ -98,4 +98,78 @@ defmodule SubzeroclawSwarm.Routing.RouterTest do
       assert is_list(messages)
     end
   end
+
+  describe "add_edges/2" do
+    test "adds new edges to existing topology" do
+      :ok = Router.add_edges("test-swarm", [{:agent_c, :agent_a}])
+      {:ok, connections} = Router.get_connections("test-swarm", :agent_c)
+      assert :agent_a in connections
+    end
+
+    test "is idempotent on duplicate edges" do
+      :ok = Router.add_edges("test-swarm", [{:agent_a, :agent_b}])
+      {:ok, connections} = Router.get_connections("test-swarm", :agent_a)
+      assert connections == [:agent_b]
+    end
+
+    test "batches multiple edges in one call" do
+      :ok =
+        Router.add_edges("test-swarm", [
+          {:agent_c, :agent_a},
+          {:agent_c, :agent_b}
+        ])
+
+      {:ok, connections} = Router.get_connections("test-swarm", :agent_c)
+      assert Enum.sort(connections) == [:agent_a, :agent_b]
+    end
+
+    test "errors on unknown swarm" do
+      assert {:error, :unknown_swarm} = Router.add_edges("nonexistent", [{:a, :b}])
+    end
+  end
+
+  describe "remove_edges/2" do
+    test "removes specified edges" do
+      :ok = Router.remove_edges("test-swarm", [{:agent_a, :agent_b}])
+      {:ok, connections} = Router.get_connections("test-swarm", :agent_a)
+      refute :agent_b in connections
+    end
+
+    test "is idempotent on non-existent edges" do
+      :ok = Router.remove_edges("test-swarm", [{:agent_a, :nowhere}])
+      {:ok, connections} = Router.get_connections("test-swarm", :agent_a)
+      assert :agent_b in connections
+    end
+
+    test "errors on unknown swarm" do
+      assert {:error, :unknown_swarm} = Router.remove_edges("nonexistent", [{:a, :b}])
+    end
+  end
+
+  describe "remove_node/2" do
+    setup do
+      Router.register_topology("node-test", [
+        {:a, :b},
+        {:a, :c},
+        {:b, :a},
+        {:c, :b}
+      ])
+
+      on_exit(fn -> Router.unregister_topology("node-test") end)
+      :ok
+    end
+
+    test "removes all edges touching the node" do
+      :ok = Router.remove_node("node-test", :a)
+      {:ok, topology} = Router.get_topology("node-test")
+
+      refute Map.has_key?(topology, :a)
+      refute :a in Map.get(topology, :b, [])
+      assert :b in Map.get(topology, :c, [])
+    end
+
+    test "errors on unknown swarm" do
+      assert {:error, :unknown_swarm} = Router.remove_node("nonexistent", :a)
+    end
+  end
 end

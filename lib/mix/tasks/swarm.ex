@@ -50,6 +50,9 @@ defmodule Mix.Tasks.Swarm do
       ["build" | rest] -> Mix.Tasks.Swarm.Build.run(rest)
       ["config" | rest] -> dispatch_config(rest)
       ["list-skills" | rest] -> Mix.Tasks.Swarm.ListSkills.run(rest)
+      ["scale" | rest] -> Mix.Tasks.Swarm.Scale.run(rest)
+      ["overlay" | rest] -> Mix.Tasks.Swarm.Overlay.run(rest)
+      ["snapshot" | rest] -> Mix.Tasks.Swarm.Snapshot.run(rest)
       _ -> print_help()
     end
   end
@@ -299,11 +302,80 @@ defmodule Mix.Tasks.Swarm.Start.Daemon do
         )
     after
       @task_poll_interval ->
-        # Poll for pending tasks
+        # Poll for pending tasks and dynamic-swarm commands
         process_pending_tasks(swarm_name)
+        process_pending_commands(swarm_name)
         daemon_loop(swarm_name, ref)
     end
   end
+
+  defp process_pending_commands(swarm_name) do
+    commands = SwarmRegistry.get_pending_commands(swarm_name)
+
+    Enum.each(commands, fn cmd ->
+      result = apply_command(swarm_name, cmd.op, cmd.payload)
+      SwarmRegistry.mark_command_done(cmd.id, normalize_result(result))
+    end)
+  end
+
+  defp apply_command(swarm_name, :add_agent, payload) do
+    {connections, payload} = Map.pop(payload, :_connections, [])
+    {incoming, spec} = Map.pop(payload, :_incoming, [])
+    SwarmManager.add_agent(swarm_name, spec, connections: connections, incoming: incoming, persist: true)
+  end
+
+  defp apply_command(swarm_name, :remove_agent, %{name: name}) do
+    SwarmManager.remove_agent(swarm_name, name, persist: true)
+  end
+
+  defp apply_command(swarm_name, :add_object, payload) do
+    {connections, payload} = Map.pop(payload, :_connections, [])
+    {incoming, spec} = Map.pop(payload, :_incoming, [])
+    SwarmManager.add_object(swarm_name, spec, connections: connections, incoming: incoming, persist: true)
+  end
+
+  defp apply_command(swarm_name, :remove_object, %{name: name}) do
+    SwarmManager.remove_object(swarm_name, name, persist: true)
+  end
+
+  defp apply_command(swarm_name, :add_topology_edges, %{edges: edges}) do
+    SwarmManager.add_topology_edges(swarm_name, normalize_edges(edges), persist: true)
+  end
+
+  defp apply_command(swarm_name, :remove_topology_edges, %{edges: edges}) do
+    SwarmManager.remove_topology_edges(swarm_name, normalize_edges(edges), persist: true)
+  end
+
+  defp apply_command(swarm_name, :scale_agent_group, %{base_name: base, target_count: n}) do
+    SwarmManager.scale_agent_group(swarm_name, base, n, persist: true)
+  end
+
+  defp apply_command(swarm_name, :get_full_config, _payload) do
+    case SwarmManager.get_full_config(swarm_name) do
+      {:ok, config} ->
+        # Serialize the SwarmConfig struct as a plain map for transit
+        {:ok, Map.from_struct(config) |> Map.drop([:created_at])}
+
+      err ->
+        err
+    end
+  end
+
+  defp apply_command(_swarm_name, op, payload) do
+    {:error, {:unknown_command, op, payload}}
+  end
+
+  defp normalize_edges(edges) do
+    Enum.map(edges, fn
+      [f, t] -> {f, t}
+      {f, t} -> {f, t}
+    end)
+  end
+
+  defp normalize_result(:ok), do: %{status: "ok"}
+  defp normalize_result({:ok, value}), do: %{status: "ok", value: value}
+  defp normalize_result({:error, reason}), do: %{status: "error", reason: inspect(reason)}
+  defp normalize_result(other), do: %{status: "other", value: inspect(other)}
 
   defp process_pending_tasks(swarm_name) do
     tasks = SwarmRegistry.get_pending_tasks(swarm_name)

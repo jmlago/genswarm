@@ -799,4 +799,222 @@ defmodule SubzeroclawSwarmWeb.SwarmController do
   end
 
   defp get_handler_source(_), do: nil
+
+  # -- Dynamic swarm endpoints --
+
+  @doc """
+  PATCH /api/swarms/:swarm_name/topology
+  Body: { "add": [["from","to"], ...], "remove": [...] }
+  """
+  def patch_topology(conn, %{"swarm_name" => swarm} = params) do
+    add = Map.get(params, "add", []) |> Enum.map(&parse_edge/1) |> Enum.reject(&is_nil/1)
+    remove = Map.get(params, "remove", []) |> Enum.map(&parse_edge/1) |> Enum.reject(&is_nil/1)
+
+    with :ok <- maybe_op(add, &SwarmManager.add_topology_edges(swarm, &1, persist: true)),
+         :ok <- maybe_op(remove, &SwarmManager.remove_topology_edges(swarm, &1, persist: true)) do
+      json(conn, %{status: "ok", added: length(add), removed: length(remove)})
+    else
+      {:error, reason} ->
+        conn |> put_status(:bad_request) |> json(%{error: format_error(reason)})
+    end
+  end
+
+  @doc """
+  POST /api/swarms/:swarm_name/agents
+  Body: agent spec (name, backend, skills, ...) plus optional "connections", "incoming"
+  """
+  def add_agent(conn, %{"swarm_name" => swarm} = params) do
+    {opts, spec_params} = extract_topology_opts(params)
+    spec = parse_agent_spec(spec_params)
+
+    case SwarmManager.add_agent(swarm, spec, Keyword.put(opts, :persist, true)) do
+      {:ok, name} ->
+        conn |> put_status(:created) |> json(%{status: "added", name: name})
+
+      {:error, reason} ->
+        conn |> put_status(:bad_request) |> json(%{error: format_error(reason)})
+    end
+  end
+
+  @doc """
+  DELETE /api/swarms/:swarm_name/agents/:agent_name
+  """
+  def remove_agent(conn, %{"swarm_name" => swarm, "agent_name" => name}) do
+    case SwarmManager.remove_agent(swarm, name, persist: true) do
+      :ok -> json(conn, %{status: "removed", name: name})
+      {:error, reason} ->
+        conn |> put_status(:not_found) |> json(%{error: format_error(reason)})
+    end
+  end
+
+  @doc """
+  POST /api/swarms/:swarm_name/agents/:base_name/scale
+  Body: { "count": N }
+  """
+  def scale_agent_group(conn, %{"swarm_name" => swarm, "base_name" => base, "count" => count})
+      when is_integer(count) and count >= 0 do
+    case SwarmManager.scale_agent_group(swarm, base, count, persist: true) do
+      {:ok, result} -> json(conn, %{status: "ok", result: serialize_scale_result(result)})
+      {:error, reason} ->
+        conn |> put_status(:bad_request) |> json(%{error: format_error(reason)})
+    end
+  end
+
+  def scale_agent_group(conn, _) do
+    conn |> put_status(:bad_request) |> json(%{error: "Missing or invalid 'count'"})
+  end
+
+  @doc """
+  POST /api/swarms/:swarm_name/objects
+  """
+  def add_object(conn, %{"swarm_name" => swarm} = params) do
+    {opts, spec_params} = extract_topology_opts(params)
+    spec = parse_object_spec(spec_params)
+
+    case SwarmManager.add_object(swarm, spec, Keyword.put(opts, :persist, true)) do
+      {:ok, name} ->
+        conn |> put_status(:created) |> json(%{status: "added", name: name})
+
+      {:error, reason} ->
+        conn |> put_status(:bad_request) |> json(%{error: format_error(reason)})
+    end
+  end
+
+  @doc """
+  DELETE /api/swarms/:swarm_name/objects/:object_name
+  """
+  def remove_object(conn, %{"swarm_name" => swarm, "object_name" => name}) do
+    case SwarmManager.remove_object(swarm, name, persist: true) do
+      :ok -> json(conn, %{status: "removed", name: name})
+      {:error, reason} ->
+        conn |> put_status(:not_found) |> json(%{error: format_error(reason)})
+    end
+  end
+
+  @doc """
+  GET /api/swarms/:swarm_name/overlay
+  """
+  def show_overlay(conn, %{"swarm_name" => swarm}) do
+    events =
+      SwarmRegistry.load_overlay(swarm)
+      |> Enum.map(fn {op, payload} -> %{op: op, payload: payload} end)
+
+    json(conn, %{swarm: swarm, events: events})
+  end
+
+  @doc """
+  DELETE /api/swarms/:swarm_name/overlay
+  """
+  def clear_overlay(conn, %{"swarm_name" => swarm}) do
+    :ok = SwarmRegistry.clear_overlay(swarm)
+    json(conn, %{status: "cleared", swarm: swarm})
+  end
+
+  @doc """
+  POST /api/swarms/:swarm_name/snapshot
+  Returns the swarm's effective config (seed ⊕ overlay) as text/elixir.
+  """
+  def snapshot(conn, %{"swarm_name" => swarm}) do
+    case SwarmManager.get_full_config(swarm) do
+      {:ok, config} ->
+        source = SubzeroclawSwarm.Config.ExsWriter.to_exs_source(config)
+
+        conn
+        |> put_resp_content_type("text/x-elixir")
+        |> send_resp(200, source)
+
+      {:error, reason} ->
+        conn |> put_status(:not_found) |> json(%{error: format_error(reason)})
+    end
+  end
+
+  # -- Helpers for dynamic endpoints --
+
+  defp maybe_op([], _fun), do: :ok
+  defp maybe_op(items, fun), do: fun.(items)
+
+  defp parse_edge([from, to]) when is_binary(from) and is_binary(to) do
+    {String.to_atom(from), String.to_atom(to)}
+  end
+
+  defp parse_edge(%{"from" => from, "to" => to}) when is_binary(from) and is_binary(to) do
+    {String.to_atom(from), String.to_atom(to)}
+  end
+
+  defp parse_edge(_), do: nil
+
+  defp extract_topology_opts(params) do
+    connections =
+      params
+      |> Map.get("connections", [])
+      |> Enum.map(&safe_atom/1)
+      |> Enum.reject(&is_nil/1)
+
+    incoming =
+      params
+      |> Map.get("incoming", [])
+      |> Enum.map(&safe_atom/1)
+      |> Enum.reject(&is_nil/1)
+
+    {[connections: connections, incoming: incoming],
+     Map.drop(params, ["connections", "incoming", "swarm_name"])}
+  end
+
+  defp parse_agent_spec(params) do
+    %{
+      name: safe_atom(params["name"]),
+      backend: parse_backend(params["backend"]),
+      skills: params["skills"] || [],
+      model: params["model"],
+      endpoint: params["endpoint"],
+      presets: (params["presets"] || []) |> Enum.map(&safe_atom/1),
+      config: params["config"] || %{}
+    }
+  end
+
+  defp parse_object_spec(params) do
+    %{
+      name: safe_atom(params["name"]),
+      handler: safe_module(params["handler"]),
+      backend: parse_backend(params["backend"]),
+      config: params["config"] || %{}
+    }
+  end
+
+  defp parse_backend(nil), do: nil
+  defp parse_backend(b) when is_binary(b), do: safe_atom(b)
+  defp parse_backend(%{"type" => "docker", "image" => img}), do: {:docker, img}
+  defp parse_backend(%{"type" => "ssh", "host" => host}), do: {:ssh, host}
+  defp parse_backend(%{"type" => "mock"}), do: :mock
+  defp parse_backend(%{"type" => "bwrap", "opts" => opts}), do: {:bwrap, opts}
+  defp parse_backend(%{"type" => t}), do: safe_atom(t)
+  defp parse_backend(other), do: other
+
+  defp safe_atom(nil), do: nil
+  defp safe_atom(a) when is_atom(a), do: a
+  defp safe_atom(s) when is_binary(s) do
+    try do
+      String.to_existing_atom(s)
+    rescue
+      ArgumentError -> String.to_atom(s)
+    end
+  end
+
+  defp safe_module(nil), do: nil
+  defp safe_module(m) when is_atom(m), do: m
+  defp safe_module(s) when is_binary(s) do
+    try do
+      Module.concat([s])
+    rescue
+      _ -> nil
+    end
+  end
+
+  defp serialize_scale_result(%{added: a, removed: r, failed: f}) do
+    %{
+      added: Enum.map(a, &to_string/1),
+      removed: Enum.map(r, &to_string/1),
+      failed: Enum.map(f, fn {name, reason} -> %{name: to_string(name), reason: inspect(reason)} end)
+    }
+  end
 end

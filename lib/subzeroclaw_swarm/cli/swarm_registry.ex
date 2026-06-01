@@ -90,6 +90,40 @@ defmodule SubzeroclawSwarm.CLI.SwarmRegistry do
       CREATE INDEX IF NOT EXISTS idx_tasks_pending ON tasks(swarm, status) WHERE status = 'pending'
     """)
 
+    # Swarm overlays (dynamic mutation event log)
+    Exqlite.Sqlite3.execute(db, """
+      CREATE TABLE IF NOT EXISTS swarm_overlays (
+        swarm TEXT NOT NULL,
+        seq INTEGER NOT NULL,
+        op TEXT NOT NULL,
+        payload TEXT NOT NULL,
+        applied_at TEXT NOT NULL,
+        PRIMARY KEY (swarm, seq)
+      )
+    """)
+
+    Exqlite.Sqlite3.execute(db, """
+      CREATE INDEX IF NOT EXISTS idx_overlays_swarm ON swarm_overlays(swarm, seq)
+    """)
+
+    # Swarm commands (CLI → daemon bridge)
+    Exqlite.Sqlite3.execute(db, """
+      CREATE TABLE IF NOT EXISTS swarm_commands (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        swarm TEXT NOT NULL,
+        op TEXT NOT NULL,
+        payload TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending',
+        result TEXT,
+        created_at TEXT NOT NULL,
+        processed_at TEXT
+      )
+    """)
+
+    Exqlite.Sqlite3.execute(db, """
+      CREATE INDEX IF NOT EXISTS idx_commands_pending ON swarm_commands(swarm, status) WHERE status = 'pending'
+    """)
+
     Exqlite.Sqlite3.close(db)
     :ok
   end
@@ -232,6 +266,12 @@ defmodule SubzeroclawSwarm.CLI.SwarmRegistry do
     Exqlite.Sqlite3.bind(stmt3, [name])
     Exqlite.Sqlite3.step(db, stmt3)
     Exqlite.Sqlite3.release(db, stmt3)
+
+    # Delete overlay events for this swarm
+    {:ok, stmt4} = Exqlite.Sqlite3.prepare(db, "DELETE FROM swarm_overlays WHERE swarm = ?")
+    Exqlite.Sqlite3.bind(stmt4, [name])
+    Exqlite.Sqlite3.step(db, stmt4)
+    Exqlite.Sqlite3.release(db, stmt4)
 
     Exqlite.Sqlite3.close(db)
     :ok
@@ -436,6 +476,247 @@ defmodule SubzeroclawSwarm.CLI.SwarmRegistry do
     |> Enum.each(fn s -> mark_crashed(s.name) end)
   end
 
+  # -- Swarm commands (CLI/REST → daemon bridge) --
+
+  @doc """
+  Enqueues a command to be processed by the daemon owning a swarm.
+  Returns the command ID.
+  """
+  @spec enqueue_command(String.t(), atom(), map()) :: {:ok, integer()}
+  def enqueue_command(swarm_name, op, payload) do
+    ensure_db_exists()
+    {:ok, db} = open_db()
+
+    encoded = Jason.encode!(encode_overlay_value(payload))
+
+    {:ok, stmt} =
+      Exqlite.Sqlite3.prepare(db, """
+        INSERT INTO swarm_commands (swarm, op, payload, status, created_at)
+        VALUES (?, ?, ?, 'pending', datetime('now', 'subsec'))
+      """)
+
+    Exqlite.Sqlite3.bind(stmt, [swarm_name, to_string(op), encoded])
+    Exqlite.Sqlite3.step(db, stmt)
+    Exqlite.Sqlite3.release(db, stmt)
+
+    {:ok, [[id]]} = Exqlite.Sqlite3.fetch_all(db, last_insert_rowid_stmt(db))
+    Exqlite.Sqlite3.close(db)
+    {:ok, id}
+  end
+
+  @doc """
+  Returns all pending commands for a daemon to process.
+  """
+  @spec get_pending_commands(String.t()) :: [%{id: integer(), op: atom(), payload: map()}]
+  def get_pending_commands(swarm_name) do
+    ensure_db_exists()
+    {:ok, db} = open_db()
+
+    {:ok, stmt} =
+      Exqlite.Sqlite3.prepare(db, """
+        SELECT id, op, payload FROM swarm_commands
+        WHERE swarm = ? AND status = 'pending'
+        ORDER BY created_at ASC
+      """)
+
+    Exqlite.Sqlite3.bind(stmt, [swarm_name])
+    rows = collect_command_rows(db, stmt, [])
+
+    Exqlite.Sqlite3.release(db, stmt)
+    Exqlite.Sqlite3.close(db)
+    rows
+  end
+
+  @doc """
+  Marks a command as processed, storing the result (encoded as JSON string).
+  """
+  @spec mark_command_done(integer(), term()) :: :ok
+  def mark_command_done(command_id, result) do
+    ensure_db_exists()
+    {:ok, db} = open_db()
+
+    {:ok, stmt} =
+      Exqlite.Sqlite3.prepare(db, """
+        UPDATE swarm_commands
+        SET status = 'done', result = ?, processed_at = datetime('now', 'subsec')
+        WHERE id = ?
+      """)
+
+    Exqlite.Sqlite3.bind(stmt, [Jason.encode!(encode_overlay_value(result)), command_id])
+    Exqlite.Sqlite3.step(db, stmt)
+    Exqlite.Sqlite3.release(db, stmt)
+    Exqlite.Sqlite3.close(db)
+    :ok
+  end
+
+  @doc """
+  Fetches a command result by ID. Returns nil if still pending or unknown.
+  """
+  @spec get_command_result(integer()) :: {atom(), term()} | nil
+  def get_command_result(command_id) do
+    ensure_db_exists()
+    {:ok, db} = open_db()
+
+    {:ok, stmt} =
+      Exqlite.Sqlite3.prepare(db, "SELECT status, result FROM swarm_commands WHERE id = ?")
+
+    Exqlite.Sqlite3.bind(stmt, [command_id])
+
+    result =
+      case Exqlite.Sqlite3.step(db, stmt) do
+        {:row, [status, nil]} -> {String.to_atom(status), nil}
+        {:row, [status, result_json]} ->
+          {String.to_atom(status), result_json |> Jason.decode!() |> decode_overlay_value()}
+        :done -> nil
+      end
+
+    Exqlite.Sqlite3.release(db, stmt)
+    Exqlite.Sqlite3.close(db)
+    result
+  end
+
+  defp collect_command_rows(db, stmt, acc) do
+    case Exqlite.Sqlite3.step(db, stmt) do
+      {:row, [id, op, payload_json]} ->
+        payload = payload_json |> Jason.decode!() |> decode_overlay_value()
+        row = %{id: id, op: String.to_atom(op), payload: payload}
+        collect_command_rows(db, stmt, [row | acc])
+
+      :done ->
+        Enum.reverse(acc)
+    end
+  end
+
+  defp last_insert_rowid_stmt(db) do
+    {:ok, stmt} = Exqlite.Sqlite3.prepare(db, "SELECT last_insert_rowid()")
+    stmt
+  end
+
+  # -- Overlay (dynamic swarm event log) --
+
+  @doc """
+  Appends an event to a swarm's overlay log.
+  """
+  @spec append_overlay(String.t(), atom(), map()) :: :ok
+  def append_overlay(swarm_name, op, payload) do
+    ensure_db_exists()
+    {:ok, db} = open_db()
+
+    {:ok, stmt} =
+      Exqlite.Sqlite3.prepare(db, """
+        INSERT INTO swarm_overlays (swarm, seq, op, payload, applied_at)
+        VALUES (?, COALESCE((SELECT MAX(seq) FROM swarm_overlays WHERE swarm = ?), 0) + 1,
+                ?, ?, datetime('now', 'subsec'))
+      """)
+
+    encoded_payload = Jason.encode!(encode_overlay_value(payload))
+
+    Exqlite.Sqlite3.bind(stmt, [swarm_name, swarm_name, to_string(op), encoded_payload])
+    Exqlite.Sqlite3.step(db, stmt)
+    Exqlite.Sqlite3.release(db, stmt)
+    Exqlite.Sqlite3.close(db)
+    :ok
+  end
+
+  @doc """
+  Loads all overlay events for a swarm in order.
+  Returns `[{op, payload}]`.
+  """
+  @spec load_overlay(String.t()) :: [{atom(), map()}]
+  def load_overlay(swarm_name) do
+    ensure_db_exists()
+    {:ok, db} = open_db()
+
+    {:ok, stmt} =
+      Exqlite.Sqlite3.prepare(db, """
+        SELECT op, payload FROM swarm_overlays
+        WHERE swarm = ?
+        ORDER BY seq ASC
+      """)
+
+    Exqlite.Sqlite3.bind(stmt, [swarm_name])
+    events = collect_overlay_rows(db, stmt, [])
+
+    Exqlite.Sqlite3.release(db, stmt)
+    Exqlite.Sqlite3.close(db)
+    events
+  end
+
+  @doc """
+  Clears the overlay for a swarm.
+  """
+  @spec clear_overlay(String.t()) :: :ok
+  def clear_overlay(swarm_name) do
+    ensure_db_exists()
+    {:ok, db} = open_db()
+
+    {:ok, stmt} = Exqlite.Sqlite3.prepare(db, "DELETE FROM swarm_overlays WHERE swarm = ?")
+    Exqlite.Sqlite3.bind(stmt, [swarm_name])
+    Exqlite.Sqlite3.step(db, stmt)
+    Exqlite.Sqlite3.release(db, stmt)
+    Exqlite.Sqlite3.close(db)
+    :ok
+  end
+
+  defp collect_overlay_rows(db, stmt, acc) do
+    case Exqlite.Sqlite3.step(db, stmt) do
+      {:row, [op, payload_json]} ->
+        payload = payload_json |> Jason.decode!() |> decode_overlay_value()
+        collect_overlay_rows(db, stmt, [{String.to_atom(op), payload} | acc])
+
+      :done ->
+        Enum.reverse(acc)
+    end
+  end
+
+  # Serialization: atoms get a "~" prefix, tuples become lists.
+  # Anonymous functions raise.
+  defp encode_overlay_value(value) when is_atom(value) and value not in [nil, true, false] do
+    "~" <> Atom.to_string(value)
+  end
+
+  defp encode_overlay_value(value) when is_tuple(value) do
+    value |> Tuple.to_list() |> Enum.map(&encode_overlay_value/1)
+  end
+
+  defp encode_overlay_value(value) when is_list(value) do
+    Enum.map(value, &encode_overlay_value/1)
+  end
+
+  defp encode_overlay_value(value) when is_map(value) do
+    value
+    |> Enum.map(fn {k, v} -> {encode_overlay_key(k), encode_overlay_value(v)} end)
+    |> Map.new()
+  end
+
+  defp encode_overlay_value(value) when is_function(value) do
+    raise ArgumentError, "Cannot serialize function in overlay payload"
+  end
+
+  defp encode_overlay_value(value), do: value
+
+  defp encode_overlay_key(k) when is_atom(k), do: "~" <> Atom.to_string(k)
+  defp encode_overlay_key(k), do: k
+
+  defp decode_overlay_value("~" <> rest) do
+    String.to_atom(rest)
+  end
+
+  defp decode_overlay_value(value) when is_list(value) do
+    Enum.map(value, &decode_overlay_value/1)
+  end
+
+  defp decode_overlay_value(value) when is_map(value) do
+    value
+    |> Enum.map(fn {k, v} -> {decode_overlay_key(k), decode_overlay_value(v)} end)
+    |> Map.new()
+  end
+
+  defp decode_overlay_value(value), do: value
+
+  defp decode_overlay_key("~" <> rest), do: String.to_atom(rest)
+  defp decode_overlay_key(k), do: k
+
   # Private
 
   defp db_path do
@@ -458,9 +739,10 @@ defmodule SubzeroclawSwarm.CLI.SwarmRegistry do
   end
 
   defp ensure_db_exists do
-    unless File.exists?(db_path()) do
-      init()
-    end
+    # init() is idempotent (CREATE TABLE IF NOT EXISTS), so we always run it
+    # to pick up schema additions (e.g. swarm_overlays added in a later release)
+    # if the DB file pre-existed without them.
+    init()
   end
 
   defp collect_rows(db, stmt, acc) do

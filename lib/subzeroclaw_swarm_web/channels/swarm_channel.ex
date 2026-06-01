@@ -192,6 +192,22 @@ defmodule SubzeroclawSwarmWeb.SwarmChannel do
     {:noreply, socket}
   end
 
+  # Dynamic swarm mutation events
+  def handle_info({:agent_added, _swarm, name, spec}, socket) do
+    push(socket, "agent_added", %{name: to_string(name), spec: serialize_spec(spec)})
+    {:noreply, socket}
+  end
+
+  def handle_info({:agent_removed, _swarm, name}, socket) do
+    push(socket, "agent_removed", %{name: to_string(name)})
+    {:noreply, socket}
+  end
+
+  def handle_info({:topology_changed, _swarm}, socket) do
+    push(socket, "topology_changed", %{})
+    {:noreply, socket}
+  end
+
   # Handle log events from PubSub
   def handle_info({:log_event, event}, socket) do
     # Check if event matches any log subscriptions
@@ -276,4 +292,16 @@ defmodule SubzeroclawSwarmWeb.SwarmChannel do
   defp format_timestamp(%DateTime{} = dt), do: DateTime.to_iso8601(dt)
   defp format_timestamp(ts) when is_binary(ts), do: ts
   defp format_timestamp(_), do: nil
+
+  defp serialize_spec(spec) when is_map(spec) do
+    Map.new(spec, fn {k, v} -> {to_string(k), serialize_spec_value(v)} end)
+  end
+
+  defp serialize_spec(spec), do: inspect(spec)
+
+  defp serialize_spec_value(v) when is_atom(v) and v not in [nil, true, false], do: to_string(v)
+  defp serialize_spec_value(v) when is_list(v), do: Enum.map(v, &serialize_spec_value/1)
+  defp serialize_spec_value(v) when is_map(v), do: serialize_spec(v)
+  defp serialize_spec_value(v) when is_tuple(v), do: v |> Tuple.to_list() |> Enum.map(&serialize_spec_value/1)
+  defp serialize_spec_value(v), do: v
 end

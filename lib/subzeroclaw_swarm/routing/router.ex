@@ -48,6 +48,35 @@ defmodule SubzeroclawSwarm.Routing.Router do
   end
 
   @doc """
+  Adds edges to an existing swarm topology. Idempotent — already-present
+  edges are silently ignored.
+  """
+  @spec add_edges(String.t(), [SwarmConfig.topology_edge()]) ::
+          :ok | {:error, :unknown_swarm}
+  def add_edges(swarm_name, edges) when is_list(edges) do
+    GenServer.call(__MODULE__, {:add_edges, swarm_name, edges})
+  end
+
+  @doc """
+  Removes edges from an existing swarm topology. Edges that aren't present
+  are silently ignored.
+  """
+  @spec remove_edges(String.t(), [SwarmConfig.topology_edge()]) ::
+          :ok | {:error, :unknown_swarm}
+  def remove_edges(swarm_name, edges) when is_list(edges) do
+    GenServer.call(__MODULE__, {:remove_edges, swarm_name, edges})
+  end
+
+  @doc """
+  Removes a node entirely from the topology — every edge that touches the
+  node (incoming or outgoing) is dropped.
+  """
+  @spec remove_node(String.t(), atom()) :: :ok | {:error, :unknown_swarm}
+  def remove_node(swarm_name, node) when is_atom(node) do
+    GenServer.call(__MODULE__, {:remove_node, swarm_name, node})
+  end
+
+  @doc """
   Routes a message from one agent to another.
 
   Validates the route against the topology before delivering.
@@ -108,6 +137,66 @@ defmodule SubzeroclawSwarm.Routing.Router do
     new_topologies = Map.delete(state.topologies, swarm_name)
     Logger.info("Unregistered topology for swarm #{swarm_name}")
     {:reply, :ok, %{state | topologies: new_topologies}}
+  end
+
+  def handle_call({:add_edges, swarm_name, edges}, _from, state) do
+    case Map.get(state.topologies, swarm_name) do
+      nil ->
+        {:reply, {:error, :unknown_swarm}, state}
+
+      adjacency ->
+        new_adjacency =
+          Enum.reduce(edges, adjacency, fn {from, to}, acc ->
+            targets = Map.get(acc, from, [])
+            if to in targets, do: acc, else: Map.put(acc, from, [to | targets])
+          end)
+
+        new_topologies = Map.put(state.topologies, swarm_name, new_adjacency)
+        {:reply, :ok, %{state | topologies: new_topologies}}
+    end
+  end
+
+  def handle_call({:remove_edges, swarm_name, edges}, _from, state) do
+    case Map.get(state.topologies, swarm_name) do
+      nil ->
+        {:reply, {:error, :unknown_swarm}, state}
+
+      adjacency ->
+        new_adjacency =
+          Enum.reduce(edges, adjacency, fn {from, to}, acc ->
+            case Map.get(acc, from) do
+              nil ->
+                acc
+
+              targets ->
+                case List.delete(targets, to) do
+                  [] -> Map.delete(acc, from)
+                  remaining -> Map.put(acc, from, remaining)
+                end
+            end
+          end)
+
+        new_topologies = Map.put(state.topologies, swarm_name, new_adjacency)
+        {:reply, :ok, %{state | topologies: new_topologies}}
+    end
+  end
+
+  def handle_call({:remove_node, swarm_name, node}, _from, state) do
+    case Map.get(state.topologies, swarm_name) do
+      nil ->
+        {:reply, {:error, :unknown_swarm}, state}
+
+      adjacency ->
+        new_adjacency =
+          adjacency
+          |> Map.delete(node)
+          |> Enum.map(fn {from, targets} -> {from, List.delete(targets, node)} end)
+          |> Enum.reject(fn {_from, targets} -> targets == [] end)
+          |> Map.new()
+
+        new_topologies = Map.put(state.topologies, swarm_name, new_adjacency)
+        {:reply, :ok, %{state | topologies: new_topologies}}
+    end
   end
 
   def handle_call({:get_topology, swarm_name}, _from, state) do

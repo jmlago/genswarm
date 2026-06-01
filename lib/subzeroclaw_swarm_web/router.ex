@@ -44,8 +44,21 @@ defmodule SubzeroclawSwarmWeb.Router do
         SwarmController,
         :update_skill
 
-    # Topology
+    # Topology (read + mutation)
     get "/swarms/:swarm_name/topology", SwarmController, :topology
+    patch "/swarms/:swarm_name/topology", SwarmController, :patch_topology
+
+    # Dynamic agents and objects
+    post "/swarms/:swarm_name/agents", SwarmController, :add_agent
+    delete "/swarms/:swarm_name/agents/:agent_name", SwarmController, :remove_agent
+    post "/swarms/:swarm_name/agents/:base_name/scale", SwarmController, :scale_agent_group
+    post "/swarms/:swarm_name/objects", SwarmController, :add_object
+    delete "/swarms/:swarm_name/objects/:object_name", SwarmController, :remove_object
+
+    # Overlay
+    get "/swarms/:swarm_name/overlay", SwarmController, :show_overlay
+    delete "/swarms/:swarm_name/overlay", SwarmController, :clear_overlay
+    post "/swarms/:swarm_name/snapshot", SwarmController, :snapshot
 
     # Messages
     get "/swarms/:swarm_name/messages", SwarmController, :messages

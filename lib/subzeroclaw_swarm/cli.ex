@@ -128,6 +128,15 @@ defmodule SubzeroclawSwarm.CLI do
       "list-skills" ->
         Mix.Tasks.Swarm.ListSkills.run(args)
 
+      "scale" ->
+        Mix.Tasks.Swarm.Scale.run(args)
+
+      "overlay" ->
+        Mix.Tasks.Swarm.Overlay.run(args)
+
+      "snapshot" ->
+        Mix.Tasks.Swarm.Snapshot.run(args)
+
       _ ->
         Output.error("Unknown command: #{command}")
         Output.newline()
