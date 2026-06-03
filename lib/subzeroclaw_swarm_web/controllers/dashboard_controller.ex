@@ -11,14 +11,8 @@ defmodule SubzeroclawSwarmWeb.DashboardController do
 
   def session_history(conn, %{"name" => name, "session_id" => sid}) do
     case Dashboard.session_history(name, sid) do
-      {:ok, turns} ->
-        json(conn, %{session_id: sid, turns: turns, source: "store"})
-
-      {:fallback, agent} ->
-        json(conn, %{session_id: sid, turns: [], source: "slot_fallback", agent: agent})
-
-      {:not_found} ->
-        json(conn, %{session_id: sid, turns: [], source: "unavailable"})
+      {:ok, turns} -> json(conn, %{session_id: sid, turns: turns, source: "store"})
+      {:not_found} -> json(conn, %{session_id: sid, turns: [], source: "unavailable"})
     end
   end
 end

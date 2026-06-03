@@ -35,9 +35,14 @@ defmodule SubzeroclawSwarm.Observability.Dashboard do
   Canonical transcript for a session. Asks each object's session_history/3 (durable,
   Store-backed) and returns the first `{:ok, turns}`; otherwise `{:not_found}`.
   Bodies are NEVER in the snapshot — fetched only here.
+
+  Note: there is no slot-level fallback. The ephemeral `AgentServer` history is the
+  routed-message log, not the user-facing conversation, so it is not a meaningful
+  transcript source — when no durable Store is present, the transcript is simply
+  unavailable (a durable, session-keyed Store such as Wingston's `conversation_turns`
+  is required). See spec §7.2c.
   """
-  @spec session_history(String.t(), String.t()) ::
-          {:ok, [map()]} | {:fallback, String.t()} | {:not_found}
+  @spec session_history(String.t(), String.t()) :: {:ok, [map()]} | {:not_found}
   def session_history(swarm_name, session_id) do
     case SwarmManager.status(swarm_name) do
       {:ok, status} ->
