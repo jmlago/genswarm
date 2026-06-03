@@ -33,6 +33,7 @@ defmodule SubzeroclawSwarmWeb.SwarmChannel do
       Phoenix.PubSub.subscribe(SubzeroclawSwarm.PubSub, "swarm:#{swarm_name}")
       Phoenix.PubSub.subscribe(SubzeroclawSwarm.PubSub, "swarm:#{swarm_name}:output")
       Phoenix.PubSub.subscribe(SubzeroclawSwarm.PubSub, "swarm:#{swarm_name}:routing")
+      Phoenix.PubSub.subscribe(SubzeroclawSwarm.PubSub, "swarm:#{swarm_name}:status")
 
       socket =
         socket

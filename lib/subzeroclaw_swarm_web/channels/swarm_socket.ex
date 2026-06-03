@@ -13,8 +13,12 @@ defmodule SubzeroclawSwarmWeb.SwarmSocket do
   channel "swarm:*", SubzeroclawSwarmWeb.SwarmChannel
 
   @impl true
-  def connect(_params, socket, _connect_info) do
-    {:ok, socket}
+  def connect(params, socket, _connect_info) do
+    case System.get_env("DASHBOARD_API_TOKEN") do
+      nil -> {:ok, socket}
+      "" -> {:ok, socket}
+      token -> if params["token"] == token, do: {:ok, socket}, else: :error
+    end
   end
 
   @impl true
