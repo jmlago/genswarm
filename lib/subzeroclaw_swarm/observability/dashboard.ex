@@ -14,6 +14,7 @@ defmodule SubzeroclawSwarm.Observability.Dashboard do
   alias SubzeroclawSwarm.SwarmManager
   alias SubzeroclawSwarm.Routing.Router
   alias SubzeroclawSwarm.Objects.ObjectServer
+  alias SubzeroclawSwarm.Agents.AgentServer
 
   @type warning :: %{object: String.t() | nil, code: String.t(), reason: String.t()}
 
@@ -56,6 +57,51 @@ defmodule SubzeroclawSwarm.Observability.Dashboard do
       _ ->
         {:not_found}
     end
+  end
+
+  @doc """
+  Raw output for a session's currently-bound slot (ephemeral — wiped on slot
+  recycle). Resolves session→slot from the live `:sessions` contributions and reads
+  the slot's `AgentServer` logs. `{:ok, entries}` | `{:not_found}`.
+  """
+  @spec session_logs(String.t(), String.t()) :: {:ok, [map()]} | {:not_found}
+  def session_logs(swarm_name, session_id) do
+    with {:ok, status} <- SwarmManager.status(swarm_name),
+         {:ok, slot} <- resolve_slot(swarm_name, status, session_id) do
+      {:ok, AgentServer.get_logs(swarm_name, slot)}
+    else
+      _ -> {:not_found}
+    end
+  rescue
+    _ -> {:not_found}
+  end
+
+  # session_id → bound slot atom (only ever an already-interned pool atom, so
+  # `to_existing_atom` is safe — no atom-table DoS from request input).
+  defp resolve_slot(swarm_name, status, session_id) do
+    case Enum.find(session_items(swarm_name, status), &(to_string(&1[:session_id] || &1["session_id"]) == session_id)) do
+      nil ->
+        :not_found
+
+      item ->
+        try do
+          {:ok, String.to_existing_atom(to_string(item[:agent] || item["agent"]))}
+        rescue
+          ArgumentError -> :not_found
+        end
+    end
+  end
+
+  defp session_items(swarm_name, status) do
+    Enum.flat_map(status.objects, fn o ->
+      case safe_get_dashboard(swarm_name, o.name) do
+        list when is_list(list) ->
+          list |> Enum.filter(&(&1[:kind] == :sessions)) |> Enum.flat_map(&(&1[:items] || []))
+
+        _ ->
+          []
+      end
+    end)
   end
 
   defp topology_for(swarm_name) do

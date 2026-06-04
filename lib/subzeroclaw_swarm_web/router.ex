@@ -90,5 +90,6 @@ defmodule SubzeroclawSwarmWeb.Router do
 
     get "/swarms/:name/dashboard", DashboardController, :show
     get "/swarms/:name/sessions/:session_id/history", DashboardController, :session_history
+    get "/swarms/:name/sessions/:session_id/logs", DashboardController, :session_logs
   end
 end

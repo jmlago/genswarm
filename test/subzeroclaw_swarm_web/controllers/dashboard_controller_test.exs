@@ -29,4 +29,9 @@ defmodule SubzeroclawSwarmWeb.DashboardControllerTest do
     conn = get(conn, "/api/swarms/nope/sessions/tg:1:0/history")
     assert %{"source" => "unavailable", "turns" => []} = json_response(conn, 200)
   end
+
+  test "session logs returns unavailable for unknown swarm", %{conn: conn} do
+    conn = get(conn, "/api/swarms/nope/sessions/tg:1:0/logs")
+    assert %{"source" => "unavailable", "logs" => []} = json_response(conn, 200)
+  end
 end
