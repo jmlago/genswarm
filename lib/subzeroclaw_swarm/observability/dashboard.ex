@@ -120,8 +120,20 @@ defmodule SubzeroclawSwarm.Observability.Dashboard do
     end
   end
 
+  # Fan out to objects in parallel (order-preserving) so /dashboard is bounded at
+  # ~one object-timeout regardless of object count, not the serial sum.
   defp fetch_contributions(swarm_name, objects) do
-    Map.new(objects, fn o -> {o.name, safe_get_dashboard(swarm_name, o.name)} end)
+    objects
+    |> Task.async_stream(fn o -> safe_get_dashboard(swarm_name, o.name) end,
+      timeout: 2_500,
+      on_timeout: :kill_task,
+      max_concurrency: 16
+    )
+    |> Enum.zip(objects)
+    |> Map.new(fn
+      {{:ok, contrib}, o} -> {o.name, contrib}
+      {{:exit, _}, o} -> {o.name, {:error, :timeout}}
+    end)
   end
 
   defp safe_get_dashboard(swarm_name, object_name) do
