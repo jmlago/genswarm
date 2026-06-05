@@ -7,6 +7,7 @@ defmodule GenswarmWeb.SwarmController do
 
   alias Genswarm.SwarmManager
   alias Genswarm.Agents.{AgentSupervisor, AgentServer}
+  alias Genswarm.Objects.{ObjectSupervisor, ObjectServer}
   alias Genswarm.Routing.Router
   alias Genswarm.CLI.SwarmRegistry
 
@@ -469,6 +470,47 @@ defmodule GenswarmWeb.SwarmController do
   end
 
   @doc """
+  Lists the non-agentic objects in a swarm with their lifecycle state.
+
+  GET /api/swarms/:swarm_name/objects
+  """
+  def list_objects(conn, %{"swarm_name" => swarm_name}) do
+    objects =
+      swarm_name
+      |> ObjectSupervisor.list_objects()
+      |> Enum.map(fn o ->
+        %{
+          name: to_string(o.name),
+          state: o.state,
+          handler: o.handler && inspect(o.handler)
+        }
+      end)
+
+    json(conn, %{objects: objects})
+  end
+
+  @doc """
+  Gets the live read-only state of a single object.
+
+  Generic introspection: returns whatever the object handler keeps as its domain
+  state via `ObjectServer.get_state/2`. The framework imposes no schema on it.
+
+  GET /api/swarms/:swarm_name/objects/:object_name
+  """
+  def show_object(conn, %{"swarm_name" => swarm_name, "object_name" => object_name}) do
+    name = String.to_existing_atom(object_name)
+
+    state = ObjectServer.get_state(swarm_name, name)
+    json(conn, %{object: object_name, state: state})
+  rescue
+    ArgumentError ->
+      conn |> put_status(:not_found) |> json(%{error: "Object not found"})
+  catch
+    :exit, _ ->
+      conn |> put_status(:not_found) |> json(%{error: "Object not found"})
+  end
+
+  @doc """
   Gets recent messages for a swarm.
 
   GET /api/swarms/:swarm_name/messages
@@ -636,7 +678,9 @@ defmodule GenswarmWeb.SwarmController do
   defp stop_daemon_swarm(name) do
     prefix = "szc-#{name}-"
 
-    case System.cmd("docker", ["ps", "-a", "--filter", "name=#{prefix}", "--format", "{{.Names}}"],
+    case System.cmd(
+           "docker",
+           ["ps", "-a", "--filter", "name=#{prefix}", "--format", "{{.Names}}"],
            stderr_to_stdout: true
          ) do
       {output, 0} ->
@@ -651,10 +695,13 @@ defmodule GenswarmWeb.SwarmController do
         end)
 
         SwarmRegistry.mark_stopped(name)
-        config_path = case SwarmRegistry.get_swarm(name) do
-          {:ok, swarm} -> swarm.config_path
-          _ -> nil
-        end
+
+        config_path =
+          case SwarmRegistry.get_swarm(name) do
+            {:ok, swarm} -> swarm.config_path
+            _ -> nil
+          end
+
         {:ok, config_path}
 
       _ ->
@@ -694,7 +741,15 @@ defmodule GenswarmWeb.SwarmController do
 
     case System.cmd(
            "docker",
-           ["ps", "--filter", "name=#{prefix}", "--filter", "status=paused", "--format", "{{.Names}}"],
+           [
+             "ps",
+             "--filter",
+             "name=#{prefix}",
+             "--filter",
+             "status=paused",
+             "--format",
+             "{{.Names}}"
+           ],
            stderr_to_stdout: true
          ) do
       {output, 0} ->
@@ -841,7 +896,9 @@ defmodule GenswarmWeb.SwarmController do
   """
   def remove_agent(conn, %{"swarm_name" => swarm, "agent_name" => name}) do
     case SwarmManager.remove_agent(swarm, name, persist: true) do
-      :ok -> json(conn, %{status: "removed", name: name})
+      :ok ->
+        json(conn, %{status: "removed", name: name})
+
       {:error, reason} ->
         conn |> put_status(:not_found) |> json(%{error: format_error(reason)})
     end
@@ -854,7 +911,9 @@ defmodule GenswarmWeb.SwarmController do
   def scale_agent_group(conn, %{"swarm_name" => swarm, "base_name" => base, "count" => count})
       when is_integer(count) and count >= 0 do
     case SwarmManager.scale_agent_group(swarm, base, count, persist: true) do
-      {:ok, result} -> json(conn, %{status: "ok", result: serialize_scale_result(result)})
+      {:ok, result} ->
+        json(conn, %{status: "ok", result: serialize_scale_result(result)})
+
       {:error, reason} ->
         conn |> put_status(:bad_request) |> json(%{error: format_error(reason)})
     end
@@ -885,7 +944,9 @@ defmodule GenswarmWeb.SwarmController do
   """
   def remove_object(conn, %{"swarm_name" => swarm, "object_name" => name}) do
     case SwarmManager.remove_object(swarm, name, persist: true) do
-      :ok -> json(conn, %{status: "removed", name: name})
+      :ok ->
+        json(conn, %{status: "removed", name: name})
+
       {:error, reason} ->
         conn |> put_status(:not_found) |> json(%{error: format_error(reason)})
     end
@@ -992,6 +1053,7 @@ defmodule GenswarmWeb.SwarmController do
 
   defp safe_atom(nil), do: nil
   defp safe_atom(a) when is_atom(a), do: a
+
   defp safe_atom(s) when is_binary(s) do
     try do
       String.to_existing_atom(s)
@@ -1002,6 +1064,7 @@ defmodule GenswarmWeb.SwarmController do
 
   defp safe_module(nil), do: nil
   defp safe_module(m) when is_atom(m), do: m
+
   defp safe_module(s) when is_binary(s) do
     try do
       Module.concat([s])
@@ -1014,7 +1077,8 @@ defmodule GenswarmWeb.SwarmController do
     %{
       added: Enum.map(a, &to_string/1),
       removed: Enum.map(r, &to_string/1),
-      failed: Enum.map(f, fn {name, reason} -> %{name: to_string(name), reason: inspect(reason)} end)
+      failed:
+        Enum.map(f, fn {name, reason} -> %{name: to_string(name), reason: inspect(reason)} end)
     }
   end
 end

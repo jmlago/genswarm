@@ -55,6 +55,10 @@ defmodule GenswarmWeb.Router do
     post "/swarms/:swarm_name/objects", SwarmController, :add_object
     delete "/swarms/:swarm_name/objects/:object_name", SwarmController, :remove_object
 
+    # Object introspection (read-only live state)
+    get "/swarms/:swarm_name/objects", SwarmController, :list_objects
+    get "/swarms/:swarm_name/objects/:object_name", SwarmController, :show_object
+
     # Overlay
     get "/swarms/:swarm_name/overlay", SwarmController, :show_overlay
     delete "/swarms/:swarm_name/overlay", SwarmController, :clear_overlay
@@ -75,5 +79,4 @@ defmodule GenswarmWeb.Router do
     # Config validation
     post "/config/validate", ConfigController, :validate
   end
-
 end

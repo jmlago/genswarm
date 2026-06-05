@@ -20,7 +20,9 @@ defmodule GenswarmWeb.SwarmChannel do
     # Verify swarm exists (check in-process and SQLite)
     swarm_exists =
       case SwarmManager.status(swarm_name) do
-        {:ok, _status} -> true
+        {:ok, _status} ->
+          true
+
         {:error, :not_found} ->
           case SwarmRegistry.get_swarm(swarm_name) do
             {:ok, _} -> true
@@ -33,6 +35,7 @@ defmodule GenswarmWeb.SwarmChannel do
       Phoenix.PubSub.subscribe(Genswarm.PubSub, "swarm:#{swarm_name}")
       Phoenix.PubSub.subscribe(Genswarm.PubSub, "swarm:#{swarm_name}:output")
       Phoenix.PubSub.subscribe(Genswarm.PubSub, "swarm:#{swarm_name}:routing")
+      Phoenix.PubSub.subscribe(Genswarm.PubSub, "swarm:#{swarm_name}:status")
 
       socket =
         socket
@@ -187,6 +190,11 @@ defmodule GenswarmWeb.SwarmChannel do
     {:noreply, socket}
   end
 
+  def handle_info({:swarm_started, _name, status}, socket) do
+    push(socket, "swarm_started", %{status: to_string(status)})
+    {:noreply, socket}
+  end
+
   def handle_info({:swarm_stopped, _name}, socket) do
     push(socket, "swarm_stopped", %{})
     {:noreply, socket}
@@ -302,6 +310,9 @@ defmodule GenswarmWeb.SwarmChannel do
   defp serialize_spec_value(v) when is_atom(v) and v not in [nil, true, false], do: to_string(v)
   defp serialize_spec_value(v) when is_list(v), do: Enum.map(v, &serialize_spec_value/1)
   defp serialize_spec_value(v) when is_map(v), do: serialize_spec(v)
-  defp serialize_spec_value(v) when is_tuple(v), do: v |> Tuple.to_list() |> Enum.map(&serialize_spec_value/1)
+
+  defp serialize_spec_value(v) when is_tuple(v),
+    do: v |> Tuple.to_list() |> Enum.map(&serialize_spec_value/1)
+
   defp serialize_spec_value(v), do: v
 end

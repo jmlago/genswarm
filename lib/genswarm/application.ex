@@ -42,7 +42,13 @@ defmodule Genswarm.Application do
     ]
 
     opts = [strategy: :one_for_one, name: Genswarm.Supervisor]
-    Supervisor.start_link(children, opts)
+    result = Supervisor.start_link(children, opts)
+
+    # Bridge the telemetry event stream into LogStore (durable + queryable +
+    # streamed over WS). Attached after the tree is up so LogStore is alive.
+    Genswarm.Observability.TelemetryBridge.attach()
+
+    result
   end
 
   @impl true
