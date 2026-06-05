@@ -28,6 +28,23 @@ defmodule Genswarms.Observability.TelemetryBridgeTest do
     assert event.message =~ "fixer_1"
   end
 
+  test "message_delivered is bridged under the :agent domain (regression)" do
+    # message_delivered is emitted as [:genswarms, :agent, :message_delivered]
+    # (agent_server.ex); the bridge must listen on the :agent domain, not :router,
+    # or the event never reaches LogStore.
+    :telemetry.execute(
+      [:genswarms, :agent, :message_delivered],
+      %{},
+      %{agent: :coder, swarm: "s_md", from: :researcher}
+    )
+
+    assert_receive {:log_event, %{swarm: "s_md"} = event}, 1_000
+    assert event.category == :agent
+    assert event.event_type == :message_delivered
+    assert event.agent == :coder
+    assert event.metadata.from == :researcher
+  end
+
   test "error-named events are mapped to :error level" do
     :telemetry.execute([:genswarms, :agent, :agent_error], %{}, %{agent: :a, swarm: "s2"})
 

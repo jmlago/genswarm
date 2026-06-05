@@ -148,7 +148,8 @@ defmodule Genswarms.Observability.TelemetryBridge do
         :agent_error,
         :agent_added,
         :agent_removed,
-        :task_sent
+        :task_sent,
+        :message_delivered
       ],
       object: [
         :object_started,
@@ -157,7 +158,7 @@ defmodule Genswarms.Observability.TelemetryBridge do
         :object_added,
         :object_removed
       ],
-      router: [:message_routed, :message_delivered, :message_broadcast, :invalid_route]
+      router: [:message_routed, :message_broadcast, :invalid_route]
     }
   end
 end
