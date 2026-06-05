@@ -43,20 +43,18 @@ genswarms events -h
 
 ## Command table
 
+These commands are dispatched by the `genswarms` escript binary (see
+`dispatch/2` in `lib/genswarms/cli.ex`):
+
 | Command | Description |
 |---------|-------------|
 | `init` | Create a new swarm project with standard directory structure |
-| `up` | Start the Phoenix server (REST API + WebSocket) in the background |
+| `up` | Start the Phoenix server (REST API + WebSocket) in the background (legacy alias for `dashboard start`) |
 | `down` | Stop the dashboard and/or running swarms |
 | `dashboard` | Start, stop, or check the web dashboard |
 | `start` | Start a swarm from a config file (daemon by default) |
 | `stop` | Stop a running swarm daemon |
 | `restart` | Restart a swarm, reloading its config |
-| `restart-agent` | Restart a single agent in a running swarm (via the API server) |
-| `pause` | Pause a swarm by freezing its Docker containers |
-| `resume` | Resume a paused swarm |
-| `delete` | Delete a swarm and all of its data |
-| `clean` | Remove stopped/crashed swarms (optionally clear all events) |
 | `status` | Show status of all swarms or one swarm in detail |
 | `logs` | View or stream agent logs and conversation history |
 | `events` | Query events from the centralized event store |
@@ -69,6 +67,20 @@ genswarms events -h
 | `scale` | Scale an agent group in a running swarm to a target count |
 | `overlay` | Inspect or clear a swarm's dynamic-mutation overlay |
 | `snapshot` | Emit a swarm's effective config (seed + overlay) as `.exs` |
+
+### Mix-task only commands
+
+The following operations exist as Mix tasks but are **not** wired into the
+escript dispatch — running `genswarms pause …` falls through to
+`Unknown command`. Invoke them through Mix instead:
+
+| Command | Description |
+|---------|-------------|
+| `mix genswarms.pause <name>` | Pause a swarm by freezing its Docker containers |
+| `mix genswarms.resume <name>` | Resume a paused swarm |
+| `mix genswarms.delete <name>` | Delete a swarm and all of its data |
+| `mix genswarms.clean` | Remove stopped/crashed swarms (optionally clear all events) |
+| `mix genswarms.restart_agent <swarm> <agent>` | Restart a single agent in a running swarm (requires the API server) |
 
 ## Server
 
@@ -170,43 +182,43 @@ genswarms restart example-swarm --delete  # clean restart (wipe old logs/events/
 |------|-------|-------------|
 | `--delete` | `-d` | Delete all logs, events, and data before restarting |
 
-### `pause`
+### `mix genswarms.pause` (Mix-only)
 
 Freeze every Docker container belonging to the swarm (`docker pause szc-<swarm>-<agent>`). Processes are suspended but containers stay alive. If no matching running containers are found, the command reports `No running containers found for swarm` and exits non-zero.
 
 ```bash
-genswarms pause example-swarm
+mix genswarms.pause example-swarm
 ```
 
-### `resume`
+### `mix genswarms.resume` (Mix-only)
 
 Unfreeze all paused Docker containers in the swarm.
 
 ```bash
-genswarms resume example-swarm
+mix genswarms.resume example-swarm
 ```
 
-### `delete`
+### `mix genswarms.delete` (Mix-only)
 
 Stop the swarm if running, remove it from the registry, and delete all of its events, logs, and data files.
 
 ```bash
-genswarms delete example-swarm
-genswarms delete example-swarm --force
+mix genswarms.delete example-swarm
+mix genswarms.delete example-swarm --force
 ```
 
 | Flag | Alias | Description |
 |------|-------|-------------|
 | `--force` | `-f` | Skip the confirmation prompt |
 
-### `clean`
+### `mix genswarms.clean` (Mix-only)
 
 Remove all stopped and crashed swarms (and their files) from the registry.
 
 ```bash
-genswarms clean           # clean stopped/crashed swarms
-genswarms clean --all     # also clear all events from the database
-genswarms clean --force   # skip confirmation
+mix genswarms.clean           # clean stopped/crashed swarms
+mix genswarms.clean --all     # also clear all events from the database
+mix genswarms.clean --force   # skip confirmation
 ```
 
 | Flag | Alias | Description |
@@ -245,15 +257,15 @@ genswarms msg example-swarm researcher coder "Can you review this code?"
 
 Usage: `genswarms msg <swarm> <from> <to> <message>`
 
-### `restart-agent`
+### `mix genswarms.restart_agent` (Mix-only)
 
-Restart a single agent in a running swarm. This requires the API server to be running.
+Restart a single agent in a running swarm. This requires the API server to be running. It is **not** an escript subcommand — invoke it through Mix.
 
 ```bash
-genswarms restart-agent example-swarm researcher
+mix genswarms.restart_agent example-swarm researcher
 ```
 
-Usage: `genswarms restart-agent <swarm> <agent>`
+Usage: `mix genswarms.restart_agent <swarm> <agent>`
 
 ### `logs`
 

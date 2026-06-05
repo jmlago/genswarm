@@ -156,8 +156,9 @@ mix genswarms.test --mock path/to/script.json
 
 The task expands the path with `Path.expand/1` and exports it as
 `SUBZEROCLAW_MOCK_SCRIPT`, which is passed through to the agents (including bwrap
-sandboxes). Subzeroclaw — not Genswarms — reads the script and returns canned
-responses instead of calling the API. The script format is defined by subzeroclaw.
+sandboxes). The `subzeroclaw` runtime — not Genswarms — reads the script and
+returns canned responses instead of calling the API. The script format is
+defined by subzeroclaw.
 
 You can also set `SUBZEROCLAW_MOCK_SCRIPT` directly in the environment to get the
 same behavior outside the test harness.
