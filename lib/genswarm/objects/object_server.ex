@@ -215,17 +215,7 @@ defmodule Genswarm.Objects.ObjectServer do
         {:ok, handler_state} ->
           Logger.info("[#{state.swarm_name}/#{state.name}] Object handler initialized")
 
-          LogStore.log(
-            :info,
-            :object,
-            :started,
-            "Object #{state.name} started (handler: #{state.handler})",
-            swarm: state.swarm_name,
-            agent: state.name,
-            metadata: %{handler: state.handler, mode: :native}
-          )
-
-          emit_telemetry(:object_started, state)
+          emit_telemetry(:object_started, state, %{mode: :native})
 
           {:noreply,
            %{
@@ -240,17 +230,7 @@ defmodule Genswarm.Objects.ObjectServer do
             "[#{state.swarm_name}/#{state.name}] Object handler initialized, sending initial message to #{to}"
           )
 
-          LogStore.log(
-            :info,
-            :object,
-            :started,
-            "Object #{state.name} started (handler: #{state.handler})",
-            swarm: state.swarm_name,
-            agent: state.name,
-            metadata: %{handler: state.handler, mode: :native}
-          )
-
-          emit_telemetry(:object_started, state)
+          emit_telemetry(:object_started, state, %{mode: :native})
           # Send the initial message
           Router.route(state.swarm_name, state.name, to, content)
 
@@ -267,17 +247,7 @@ defmodule Genswarm.Objects.ObjectServer do
             "[#{state.swarm_name}/#{state.name}] Object handler initialized, sending #{length(messages)} initial messages"
           )
 
-          LogStore.log(
-            :info,
-            :object,
-            :started,
-            "Object #{state.name} started (handler: #{state.handler})",
-            swarm: state.swarm_name,
-            agent: state.name,
-            metadata: %{handler: state.handler, mode: :native}
-          )
-
-          emit_telemetry(:object_started, state)
+          emit_telemetry(:object_started, state, %{mode: :native})
 
           # Send all initial messages
           Enum.each(messages, fn
@@ -301,17 +271,7 @@ defmodule Genswarm.Objects.ObjectServer do
             "[#{state.swarm_name}/#{state.name}] Failed to initialize handler: #{inspect(reason)}"
           )
 
-          LogStore.log(
-            :error,
-            :object,
-            :init_failed,
-            "Object #{state.name} failed to initialize: #{inspect(reason)}",
-            swarm: state.swarm_name,
-            agent: state.name,
-            metadata: %{handler: state.handler, reason: inspect(reason)}
-          )
-
-          emit_telemetry(:object_error, state, %{reason: reason})
+          emit_telemetry(:object_error, state, %{reason: inspect(reason), phase: :init})
           {:noreply, %{state | state: :error}}
       end
     else
@@ -341,17 +301,7 @@ defmodule Genswarm.Objects.ObjectServer do
       {:ok, ref} ->
         Logger.info("[#{state.swarm_name}/#{state.name}] Object backend started")
 
-        LogStore.log(
-          :info,
-          :object,
-          :started,
-          "Object #{state.name} started (backend: #{state.backend_module})",
-          swarm: state.swarm_name,
-          agent: state.name,
-          metadata: %{backend: state.backend_module, mode: :process}
-        )
-
-        emit_telemetry(:object_started, state)
+        emit_telemetry(:object_started, state, %{mode: :process, backend: state.backend_module})
         {:noreply, %{state | backend_ref: ref, state: :idle, last_activity: DateTime.utc_now()}}
 
       {:error, reason} ->
@@ -359,17 +309,12 @@ defmodule Genswarm.Objects.ObjectServer do
           "[#{state.swarm_name}/#{state.name}] Failed to start backend: #{inspect(reason)}"
         )
 
-        LogStore.log(
-          :error,
-          :object,
-          :start_failed,
-          "Object #{state.name} failed to start: #{inspect(reason)}",
-          swarm: state.swarm_name,
-          agent: state.name,
-          metadata: %{backend: state.backend_module, reason: inspect(reason)}
-        )
+        emit_telemetry(:object_error, state, %{
+          reason: inspect(reason),
+          backend: state.backend_module,
+          phase: :start
+        })
 
-        emit_telemetry(:object_error, state, %{reason: reason})
         {:noreply, %{state | state: :error}}
     end
   end
@@ -431,6 +376,7 @@ defmodule Genswarm.Objects.ObjectServer do
             {:send, to, msg} -> route_message(state.swarm_name, state.name, to, msg)
             {:broadcast, msg} -> Router.broadcast(state.swarm_name, state.name, msg)
           end)
+
           {:noreply, %{state | handler_state: handler_state, last_activity: DateTime.utc_now()}}
 
         {:send_many, messages, handler_state} ->
@@ -439,6 +385,7 @@ defmodule Genswarm.Objects.ObjectServer do
             {:send, to, msg} -> route_message(state.swarm_name, state.name, to, msg)
             {:broadcast, msg} -> Router.broadcast(state.swarm_name, state.name, msg)
           end)
+
           {:noreply, %{state | handler_state: handler_state, last_activity: DateTime.utc_now()}}
       end
     else
@@ -752,7 +699,7 @@ defmodule Genswarm.Objects.ObjectServer do
     Router.route(swarm_name, from, to, content)
   end
 
-  defp emit_telemetry(event, state, metadata \\ %{}) do
+  defp emit_telemetry(event, state, metadata) do
     :telemetry.execute(
       [:genswarm, :object, event],
       %{time: System.system_time()},

@@ -198,13 +198,7 @@ defmodule Genswarm.Agents.AgentServer do
     case state.backend_module.start(to_string(state.name), config) do
       {:ok, ref} ->
         Logger.info("[#{state.swarm_name}/#{state.name}] Backend started")
-        emit_telemetry(:agent_started, state)
-
-        LogStore.log(:info, :agent, :started, "Agent #{state.name} started",
-          swarm: state.swarm_name,
-          agent: state.name,
-          metadata: %{backend: state.backend_module.backend_type()}
-        )
+        emit_telemetry(:agent_started, state, %{backend: state.backend_module.backend_type()})
 
         # Start log watcher for message routing
         log_dir = skills_dir |> Path.dirname() |> Path.join("logs")
@@ -232,17 +226,10 @@ defmodule Genswarm.Agents.AgentServer do
           "[#{state.swarm_name}/#{state.name}] Failed to start backend: #{inspect(reason)}"
         )
 
-        emit_telemetry(:agent_error, state, %{reason: reason})
-
-        LogStore.log(
-          :error,
-          :agent,
-          :start_failed,
-          "Agent #{state.name} failed to start: #{inspect(reason)}",
-          swarm: state.swarm_name,
-          agent: state.name,
-          metadata: %{reason: inspect(reason), backend: state.backend_module.backend_type()}
-        )
+        emit_telemetry(:agent_error, state, %{
+          reason: inspect(reason),
+          backend: state.backend_module.backend_type()
+        })
 
         {:noreply, %{state | state: :error}}
     end
@@ -260,9 +247,8 @@ defmodule Genswarm.Agents.AgentServer do
 
   def handle_info({port, {:exit_status, status}}, %{backend_ref: %{port: port}} = state) do
     Logger.warning("[#{state.swarm_name}/#{state.name}] Port exited with status #{status}")
-    emit_telemetry(:agent_stopped, state, %{exit_status: status})
 
-    # Log with buffer tail for debugging
+    # Buffer tail kept for debugging an unexpected exit.
     buffer_tail =
       if byte_size(state.buffer) > 0 do
         String.slice(state.buffer, -500, 500)
@@ -270,15 +256,11 @@ defmodule Genswarm.Agents.AgentServer do
         nil
       end
 
-    LogStore.log(
-      :warning,
-      :agent,
-      :port_exit,
-      "Agent #{state.name} port exited with status #{status}",
-      swarm: state.swarm_name,
-      agent: state.name,
-      metadata: %{exit_status: status, buffer_tail: buffer_tail}
-    )
+    emit_telemetry(:agent_stopped, state, %{
+      exit_status: status,
+      buffer_tail: buffer_tail,
+      level: :warning
+    })
 
     {:noreply, %{state | state: :stopped}}
   end
@@ -300,20 +282,6 @@ defmodule Genswarm.Agents.AgentServer do
         message = AgentProtocol.encode_task(task)
         send_to_backend(state, message)
         emit_telemetry(:task_sent, state, %{task: task})
-
-        # Log task to LogStore
-        task_preview =
-          if String.length(task) > 100 do
-            String.slice(task, 0, 100) <> "..."
-          else
-            task
-          end
-
-        LogStore.log(:info, :agent, :task_sent, "Task sent: #{task_preview}",
-          swarm: state.swarm_name,
-          agent: state.name,
-          metadata: %{task: task}
-        )
 
         # Add to history
         history_entry = %{
@@ -664,12 +632,13 @@ defmodule Genswarm.Agents.AgentServer do
         filename = String.pad_leading(Integer.to_string(seq), 4, "0") <> "_#{from}.json"
         file_path = Path.join(inbox_dir, filename)
 
-        msg_data = Jason.encode!(%{
-          from: from,
-          content: content,
-          seq: seq,
-          timestamp: DateTime.utc_now() |> DateTime.to_iso8601()
-        })
+        msg_data =
+          Jason.encode!(%{
+            from: from,
+            content: content,
+            seq: seq,
+            timestamp: DateTime.utc_now() |> DateTime.to_iso8601()
+          })
 
         File.write!(file_path, msg_data)
       rescue
@@ -721,10 +690,11 @@ defmodule Genswarm.Agents.AgentServer do
         content = File.read!(src)
         workspace = Map.get(state.backend_config, :workspace, "")
 
-        resolved = content
-        |> String.replace("{{agent_name}}", to_string(state.name))
-        |> String.replace("{{swarm_name}}", to_string(state.swarm_name))
-        |> String.replace("{{workspace}}", to_string(workspace))
+        resolved =
+          content
+          |> String.replace("{{agent_name}}", to_string(state.name))
+          |> String.replace("{{swarm_name}}", to_string(state.swarm_name))
+          |> String.replace("{{workspace}}", to_string(workspace))
 
         File.write!(dst, resolved)
         Logger.debug("[#{state.swarm_name}/#{state.name}] Copied skill: #{src} -> #{dst}")
@@ -806,7 +776,7 @@ defmodule Genswarm.Agents.AgentServer do
     end
   end
 
-  defp emit_telemetry(event, state, metadata \\ %{}) do
+  defp emit_telemetry(event, state, metadata) do
     :telemetry.execute(
       [:genswarm, :agent, event],
       %{time: System.system_time()},

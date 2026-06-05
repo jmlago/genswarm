@@ -58,7 +58,7 @@ defmodule Genswarm.Observability.TelemetryBridge do
   @doc false
   def handle_event([:genswarm, domain, event], _measurements, metadata, _config) do
     LogStore.log(
-      level_for(event),
+      metadata[:level] || level_for(event),
       category_for(domain),
       event,
       message_for(domain, event, metadata),
@@ -80,6 +80,9 @@ defmodule Genswarm.Observability.TelemetryBridge do
   defp category_for(:router), do: :routing
   defp category_for(domain), do: domain
 
+  # An emitter may pass `level:` in its telemetry metadata to set the LogStore
+  # level explicitly (e.g. a partial swarm start, an unexpected agent exit);
+  # otherwise it is derived from the event name below.
   defp level_for(event) do
     name = Atom.to_string(event)
 
@@ -106,17 +109,20 @@ defmodule Genswarm.Observability.TelemetryBridge do
     do: "object #{object} #{humanize(event)}"
 
   defp message_for(:swarm, event, %{swarm: swarm}),
-    do: "swarm #{swarm} #{humanize(event)}"
+    do: "swarm #{swarm} #{event |> Atom.to_string() |> String.replace_prefix("swarm_", "")}"
 
   defp message_for(domain, event, _metadata),
     do: "#{domain} #{humanize(event)}"
 
   defp humanize(event), do: event |> Atom.to_string() |> String.replace("_", " ")
 
+  # The :level override is a logging concern, not part of the event payload.
+  defp sanitize(metadata), do: do_sanitize(Map.drop(metadata, [:level]))
+
   # Keep metadata JSON-friendly and avoid persisting large/opaque terms. We drop
   # the keys LogStore already lifts to columns (swarm/agent/object) to avoid
   # duplicating them inside the metadata blob.
-  defp sanitize(metadata) do
+  defp do_sanitize(metadata) do
     metadata
     |> Map.drop([:swarm, :agent, :object])
     |> Map.new(fn {k, v} -> {k, sanitize_value(v)} end)

@@ -6,9 +6,21 @@ or alerting on top of the framework.
 
 ## The one rule
 
-> Every observable state transition emits a `:telemetry` event. A telemetry
-> bridge funnels those into `LogStore`, which both **persists** them (ETS +
-> SQLite) and **streams** them over WebSocket. There is no second path.
+> Every observable **state transition** emits a `:telemetry` event — and nothing
+> else logs it. A telemetry bridge funnels those into `LogStore`, which both
+> **persists** them (ETS + SQLite) and **streams** them over WebSocket.
+
+A transition is logged in exactly one place: its `emit_telemetry/2,3` call. The
+emitter never also calls `LogStore.log` for the same moment — that was the old
+duplication, now removed. `LogStore.log` is reserved for **diagnostics/IO that
+have no transition event**: backend container ops, raw agent stdout, received
+messages, config-load failures. Those are single-source, so they never double up
+with the bridge.
+
+The bridge derives the log `level` from the event name (see below). When the
+level depends on the outcome (a partial swarm start, an unexpected agent exit),
+the emitter passes `level:` in the telemetry metadata to set it explicitly; the
+bridge strips that key before persisting, so it never leaks into the payload.
 
 ```
 emit_telemetry(:agent_started, ...)            ← emitters (swarm_manager, agent_server, …)

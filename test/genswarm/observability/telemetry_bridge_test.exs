@@ -75,6 +75,29 @@ defmodule Genswarm.Observability.TelemetryBridgeTest do
     assert event.metadata.handler == SomeHandler
   end
 
+  test "an explicit :level in metadata overrides the name-derived level" do
+    # :swarm_started would derive :info, but a partial start passes level: :error.
+    :telemetry.execute(
+      [:genswarm, :swarm, :swarm_started],
+      %{},
+      %{swarm: "s6", status: :error, level: :error}
+    )
+
+    assert_receive {:log_event, %{swarm: "s6"} = event}, 1_000
+    assert event.event_type == :swarm_started
+    assert event.level == :error
+    # The override is a logging concern, not part of the event payload.
+    refute Map.has_key?(event.metadata, :level)
+    assert event.metadata.status == :error
+  end
+
+  test "swarm messages don't stutter the domain word" do
+    :telemetry.execute([:genswarm, :swarm, :swarm_started], %{}, %{swarm: "s7", status: :running})
+
+    assert_receive {:log_event, %{swarm: "s7"} = event}, 1_000
+    assert event.message == "swarm s7 started"
+  end
+
   test "every event in known_events/0 is registered with :telemetry" do
     attached = :telemetry.list_handlers([]) |> Enum.map(& &1.id)
     assert "genswarm-telemetry-bridge" in attached

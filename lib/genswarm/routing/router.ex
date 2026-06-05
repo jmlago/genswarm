@@ -255,20 +255,14 @@ defmodule Genswarm.Routing.Router do
           {:noreply, new_state}
         else
           Logger.warning("Invalid route: #{from} -> #{to} in swarm #{swarm_name}")
-          emit_telemetry(:invalid_route, %{swarm: swarm_name, from: from, to: to})
-
-          # Log with topology context
           allowed_targets = Map.get(topology, from, [])
 
-          LogStore.log(
-            :warning,
-            :routing,
-            :invalid_route,
-            "Invalid route: #{from} -> #{to} (allowed: #{inspect(allowed_targets)})",
+          emit_telemetry(:invalid_route, %{
             swarm: swarm_name,
-            agent: from,
-            metadata: %{from: from, to: to, allowed_targets: allowed_targets}
-          )
+            from: from,
+            to: to,
+            allowed_targets: allowed_targets
+          })
 
           {:noreply, state}
         end

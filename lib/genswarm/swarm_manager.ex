@@ -285,15 +285,11 @@ defmodule Genswarm.SwarmManager do
           {:swarm_stopped, swarm_name}
         )
 
-        emit_telemetry(:swarm_stopped, %{swarm: swarm_name})
-
-        LogStore.log(:info, :swarm, :stopped, "Swarm #{swarm_name} stopped",
+        emit_telemetry(:swarm_stopped, %{
           swarm: swarm_name,
-          metadata: %{
-            agent_count: length(swarm_info.config.agents),
-            object_count: length(swarm_info.config.objects || [])
-          }
-        )
+          agent_count: length(swarm_info.config.agents),
+          object_count: length(swarm_info.config.objects || [])
+        })
 
         # Remove swarm from state entirely (allows clean restart)
         new_swarms = Map.delete(state.swarms, swarm_name)
@@ -473,7 +469,9 @@ defmodule Genswarm.SwarmManager do
       swarm_info ->
         case Router.add_edges(swarm_name, edges) do
           :ok ->
-            new_config = update_in_config_topology(swarm_info.config, edges, &Enum.uniq(&1 ++ edges))
+            new_config =
+              update_in_config_topology(swarm_info.config, edges, &Enum.uniq(&1 ++ edges))
+
             new_info = %{swarm_info | config: new_config}
             new_state = put_swarm(state, swarm_name, new_info)
             maybe_persist(opts, swarm_name, :add_topology_edges, %{edges: edges})
@@ -628,36 +626,24 @@ defmodule Genswarm.SwarmManager do
         {:swarm_started, swarm_name, final_status}
       )
 
+      error_details = Enum.map(errors, fn {:error, reason} -> inspect(reason) end)
+
       emit_telemetry(:swarm_started, %{
         swarm: swarm_name,
         agent_count: length(config.agents),
         object_count: object_count,
-        status: final_status
+        status: final_status,
+        error_count: length(errors),
+        errors: error_details,
+        level: if(errors == [], do: :info, else: :error)
       })
 
       if Enum.empty?(errors) do
-        LogStore.log(:info, :swarm, :started, "Swarm #{swarm_name} started successfully",
-          swarm: swarm_name,
-          metadata: %{agent_count: length(config.agents), object_count: object_count}
-        )
-
         # Replay overlay events on top of the freshly started seed
         replayed_state = replay_overlay(swarm_name, final_state)
 
         {:reply, {:ok, swarm_name}, replayed_state}
       else
-        error_details = Enum.map(errors, fn {:error, reason} -> inspect(reason) end)
-
-        LogStore.log(:error, :swarm, :partial_start, "Swarm #{swarm_name} started with errors",
-          swarm: swarm_name,
-          metadata: %{
-            agent_count: length(config.agents),
-            object_count: object_count,
-            error_count: length(errors),
-            errors: error_details
-          }
-        )
-
         {:reply, {:error, {:partial_start, errors}}, final_state}
       end
     end
@@ -768,10 +754,18 @@ defmodule Genswarm.SwarmManager do
         state
 
       swarm_info ->
-        case do_add_agent(swarm_name, swarm_info, spec, connections: connections, incoming: incoming) do
-          {:ok, _name, new_info} -> put_swarm(state, swarm_name, new_info)
+        case do_add_agent(swarm_name, swarm_info, spec,
+               connections: connections,
+               incoming: incoming
+             ) do
+          {:ok, _name, new_info} ->
+            put_swarm(state, swarm_name, new_info)
+
           {:error, reason} ->
-            Logger.warning("Overlay replay: failed to apply add_agent #{inspect(spec[:name])}: #{inspect(reason)}")
+            Logger.warning(
+              "Overlay replay: failed to apply add_agent #{inspect(spec[:name])}: #{inspect(reason)}"
+            )
+
             state
         end
     end
@@ -779,7 +773,9 @@ defmodule Genswarm.SwarmManager do
 
   defp apply_overlay_event(swarm_name, :remove_agent, %{name: name}, state) do
     case Map.get(state.swarms, swarm_name) do
-      nil -> state
+      nil ->
+        state
+
       swarm_info ->
         case do_remove_agent(swarm_name, swarm_info, name) do
           {:ok, new_info} -> put_swarm(state, swarm_name, new_info)
@@ -793,12 +789,22 @@ defmodule Genswarm.SwarmManager do
     {incoming, spec} = Map.pop(payload, :_incoming, [])
 
     case Map.get(state.swarms, swarm_name) do
-      nil -> state
+      nil ->
+        state
+
       swarm_info ->
-        case do_add_object(swarm_name, swarm_info, spec, connections: connections, incoming: incoming) do
-          {:ok, _name, new_info} -> put_swarm(state, swarm_name, new_info)
+        case do_add_object(swarm_name, swarm_info, spec,
+               connections: connections,
+               incoming: incoming
+             ) do
+          {:ok, _name, new_info} ->
+            put_swarm(state, swarm_name, new_info)
+
           {:error, reason} ->
-            Logger.warning("Overlay replay: failed to apply add_object #{inspect(spec[:name])}: #{inspect(reason)}")
+            Logger.warning(
+              "Overlay replay: failed to apply add_object #{inspect(spec[:name])}: #{inspect(reason)}"
+            )
+
             state
         end
     end
@@ -806,7 +812,9 @@ defmodule Genswarm.SwarmManager do
 
   defp apply_overlay_event(swarm_name, :remove_object, %{name: name}, state) do
     case Map.get(state.swarms, swarm_name) do
-      nil -> state
+      nil ->
+        state
+
       swarm_info ->
         case do_remove_object(swarm_name, swarm_info, name) do
           {:ok, new_info} -> put_swarm(state, swarm_name, new_info)
@@ -817,12 +825,15 @@ defmodule Genswarm.SwarmManager do
 
   defp apply_overlay_event(swarm_name, :add_topology_edges, %{edges: edges}, state) do
     case Map.get(state.swarms, swarm_name) do
-      nil -> state
+      nil ->
+        state
+
       swarm_info ->
-        edges_tuples = Enum.map(edges, fn
-          [f, t] -> {f, t}
-          {f, t} -> {f, t}
-        end)
+        edges_tuples =
+          Enum.map(edges, fn
+            [f, t] -> {f, t}
+            {f, t} -> {f, t}
+          end)
 
         Router.add_edges(swarm_name, edges_tuples)
         new_config = update_in_config_topology(swarm_info.config, edges_tuples, nil)
@@ -832,22 +843,36 @@ defmodule Genswarm.SwarmManager do
 
   defp apply_overlay_event(swarm_name, :remove_topology_edges, %{edges: edges}, state) do
     case Map.get(state.swarms, swarm_name) do
-      nil -> state
+      nil ->
+        state
+
       swarm_info ->
-        edges_tuples = Enum.map(edges, fn
-          [f, t] -> {f, t}
-          {f, t} -> {f, t}
-        end)
+        edges_tuples =
+          Enum.map(edges, fn
+            [f, t] -> {f, t}
+            {f, t} -> {f, t}
+          end)
 
         Router.remove_edges(swarm_name, edges_tuples)
         new_topology = swarm_info.config.topology -- edges_tuples
-        put_swarm(state, swarm_name, %{swarm_info | config: %{swarm_info.config | topology: new_topology}})
+
+        put_swarm(state, swarm_name, %{
+          swarm_info
+          | config: %{swarm_info.config | topology: new_topology}
+        })
     end
   end
 
-  defp apply_overlay_event(swarm_name, :scale_agent_group, %{base_name: base, target_count: n}, state) do
+  defp apply_overlay_event(
+         swarm_name,
+         :scale_agent_group,
+         %{base_name: base, target_count: n},
+         state
+       ) do
     case Map.get(state.swarms, swarm_name) do
-      nil -> state
+      nil ->
+        state
+
       swarm_info ->
         case do_scale_agent_group(swarm_name, swarm_info, base, n, []) do
           {:ok, _result, new_info} -> put_swarm(state, swarm_name, new_info)
@@ -857,7 +882,10 @@ defmodule Genswarm.SwarmManager do
   end
 
   defp apply_overlay_event(swarm_name, op, payload, state) do
-    Logger.warning("Overlay replay: unknown op #{inspect(op)} for swarm #{swarm_name}: #{inspect(payload)}")
+    Logger.warning(
+      "Overlay replay: unknown op #{inspect(op)} for swarm #{swarm_name}: #{inspect(payload)}"
+    )
+
     state
   end
 
@@ -924,6 +952,7 @@ defmodule Genswarm.SwarmManager do
       :ok ->
         # Remove from topology in both Router and config
         Router.remove_node(swarm_name, agent_name)
+
         new_topology =
           Enum.reject(swarm_info.config.topology, fn {f, t} ->
             f == agent_name or t == agent_name
@@ -1126,6 +1155,7 @@ defmodule Genswarm.SwarmManager do
       ws ->
         old_str = to_string(old_name)
         new_str = to_string(new_name)
+
         new_ws =
           cond do
             String.ends_with?(ws, "/" <> old_str) ->
