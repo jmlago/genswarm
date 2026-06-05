@@ -177,6 +177,109 @@ daemon swarm C ─┘                                             ┘
   `Phoenix.PubSub` to its **Redis adapter** — the single spine means only the
   transport changes, not the emitters, bridge, or channel.
 
+## Scaling the store: the `EventStore` backend
+
+The durable log sits behind one swappable interface,
+`Genswarm.Observability.EventStore` (a behaviour + facade). Everything that
+persists, reads, or tails events goes through it — `LogStore`, `EventRelay`, the
+controllers, the channel and the CLI — never a concrete backend. Backend is
+config:
+
+```elixir
+config :genswarm, :event_store, Genswarm.Observability.EventStore.Sqlite
+```
+
+The callbacks: `persist/1`, `query/1`, `events_since/2`, `max_event_id/0`, and an
+optional `child_specs/0` (processes the backend needs supervised — the app splices
+them into its tree at boot).
+
+**Why this matters at scale.** The default `…EventStore.Sqlite` opens a
+short-lived connection per write — fine at moderate load, but with, say, two
+swarms of 500 agents the connect-per-write pattern and SQLite's single-writer lock
+become the bottleneck (not the query volume). The fix is **not** just a different
+engine; it's the write path. Because every caller already goes through the facade,
+a new backend can add — transparently to callers:
+
+- **Batching + pooling** — `persist/1` is fire-and-forget, so a backend may buffer
+  writes and bulk-flush on a pooled connection. It declares its buffer/pool via
+  `child_specs/0`.
+- **Postgres** — Ecto/Postgrex pool, batched inserts, a time-partitioned table
+  with retention. `LISTEN/NOTIFY` would let `EventRelay` drop polling for push.
+- **Redis / streaming** — publish to Redis Streams / NATS for fan-out, with a
+  relational sink for queryable history.
+
+**Tiering, independent of backend.** At high agent counts, persisting every raw
+stdout/conversation line into a relational table is questionable. Split by value:
+keep structured transitions (lifecycle, routing, errors) in the queryable store;
+send the high-volume firehose to a sampled / TTL'd / separate sink.
+
+### When it saturates — a playbook
+
+The default SQLite backend opens a short-lived connection **per write** and SQLite
+allows **one writer at a time**. That is the ceiling. As a rough guide: LLM agents
+emit modest event rates (model latency dominates), so ~1000 agents is typically a
+few **thousand** events/sec at peak. Connect-per-write SQLite tops out around the
+**hundreds–~1k writes/sec** before lock contention; batched SQLite does tens of
+thousands/sec; pooled Postgres, more. So you will hit the wall via the *write
+pattern*, not the engine — fix it in that order.
+
+Work the steps top-down; each is independent and behind the `EventStore` facade,
+so callers never change.
+
+**Step 0 — Confirm it's the store.** Signals:
+
+- `LogStore` mailbox backing up — `persist_durably/1` runs inside the `LogStore`
+  cast, so a slow store grows its queue:
+  `:erlang.process_info(Process.whereis(Genswarm.Observability.LogStore), :message_queue_len)`.
+- `EventRelay` lag growing: `EventStore.max_event_id() - <relay last_id>` keeps
+  climbing → the 500-row/500ms tail can't keep up.
+- SQLite `database is locked` / 5s `busy_timeout` stalls in logs (multiple daemons
+  contending on one file).
+- `swarm events` / `/api/events` visibly lagging real time.
+
+**Step 1 — Batch writes (biggest win, same engine).** Add a backend that buffers
+and flushes in one transaction over a single held connection, instead of one
+open-write-close per event. It's a process, declared via `child_specs/0`:
+
+```elixir
+# sketch — Genswarm.Observability.EventStore.SqliteBatched
+@behaviour Genswarm.Observability.EventStore
+def child_specs, do: [__MODULE__.Writer]          # a GenServer holding one conn
+def persist(event), do: GenServer.cast(__MODULE__.Writer, {:enqueue, event})
+def query(opts), do: SwarmRegistry.query_events(opts)        # reads unchanged
+def events_since(id, n), do: SwarmRegistry.events_since(id, n)
+def max_event_id, do: SwarmRegistry.max_event_id()
+# Writer: accumulate casts, flush every ~100ms or N events in a BEGIN..COMMIT.
+```
+
+Then `config :genswarm, :event_store, …EventStore.SqliteBatched`. Nothing else
+changes — `application.ex` starts the Writer from `child_specs/0`.
+
+**Step 2 — Move to Postgres (pooled, partitioned).** When a single file / single
+writer across multiple daemons is the limit, switch engines:
+
+- `…EventStore.Postgres` over an Ecto/Postgrex **pool** (each node gets a pool;
+  `child_specs/0` returns the Repo).
+- **Batched multi-row inserts** (keep Step 1's buffer in front of the pool).
+- A **time-partitioned** `events` table (e.g. daily partitions) + a retention job
+  dropping old partitions — cheap pruning at volume.
+- `config :genswarm, :event_store, …EventStore.Postgres`. Callers unchanged.
+
+**Step 3 — Push instead of poll (retire the EventRelay loop).** With Postgres,
+`NOTIFY` on insert and have the monitor `LISTEN` and re-broadcast to PubSub — drop
+`EventRelay`'s polling entirely (no lag, no batch ceiling). With Redis, publish to
+a Stream and subscribe. Either way only the *relay/transport* changes; the
+`SwarmChannel` topics and pushes stay the same.
+
+**Step 4 — Tier the firehose.** Stop writing raw stdout / conversation lines to the
+queryable store: keep structured transitions there, route the high-volume stream
+to a TTL'd table, object storage, or a log aggregator. This is the lever that
+actually bounds growth — decide what *not* to store.
+
+Order of impact: **Step 1 (batching) usually buys the most for the least work.**
+Steps 2–3 are for multi-host / sub-second-push needs; Step 4 is for sustained
+high volume regardless of engine.
+
 ## Building a dashboard
 
 A dashboard is a **consumer**, not framework code (the project is API-first and

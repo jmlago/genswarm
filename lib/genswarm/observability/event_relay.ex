@@ -27,7 +27,7 @@ defmodule Genswarm.Observability.EventRelay do
   use GenServer
   require Logger
 
-  alias Genswarm.CLI.SwarmRegistry
+  alias Genswarm.Observability.EventStore
 
   @default_interval 500
   @batch 500
@@ -61,7 +61,7 @@ defmodule Genswarm.Observability.EventRelay do
   def handle_info(:poll, state) do
     new_last =
       state.last_id
-      |> SwarmRegistry.events_since(@batch)
+      |> EventStore.events_since(@batch)
       |> Enum.reduce(state.last_id, fn event, _acc ->
         relay(event)
         event.id
@@ -92,7 +92,7 @@ defmodule Genswarm.Observability.EventRelay do
   defp schedule(interval), do: Process.send_after(self(), :poll, interval)
 
   defp safe_max_id do
-    SwarmRegistry.max_event_id()
+    EventStore.max_event_id()
   rescue
     _ -> 0
   end

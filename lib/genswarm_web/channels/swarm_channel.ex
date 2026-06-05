@@ -13,6 +13,7 @@ defmodule GenswarmWeb.SwarmChannel do
 
   alias Genswarm.SwarmManager
   alias Genswarm.CLI.SwarmRegistry
+  alias Genswarm.Observability.EventStore
 
   @impl true
   def join("swarm:" <> swarm_name, _params, socket) do
@@ -98,9 +99,9 @@ defmodule GenswarmWeb.SwarmChannel do
     # in other BEAMs are visible too — the live stream then arrives via EventRelay).
     recent_logs =
       if agent do
-        SwarmRegistry.query_events(swarm: swarm_name, agent: String.to_atom(agent), limit: 50)
+        EventStore.query(swarm: swarm_name, agent: String.to_atom(agent), limit: 50)
       else
-        SwarmRegistry.query_events(swarm: swarm_name, limit: 50)
+        EventStore.query(swarm: swarm_name, limit: 50)
       end
       |> Enum.map(&format_log_entry/1)
       |> Enum.reverse()
@@ -150,7 +151,7 @@ defmodule GenswarmWeb.SwarmChannel do
       |> maybe_add_filter(filters, "event_type", :event_type)
 
     recent_events =
-      SwarmRegistry.query_events(query_opts)
+      EventStore.query(query_opts)
       |> Enum.map(&format_event/1)
       |> Enum.reverse()
 

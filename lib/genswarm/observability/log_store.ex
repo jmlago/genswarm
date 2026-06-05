@@ -221,8 +221,8 @@ defmodule Genswarm.Observability.LogStore do
     # Insert into ETS (in-memory for fast queries)
     :ets.insert(@table, {id, event})
 
-    # Persist to SQLite (for CLI access across processes)
-    persist_to_sqlite(level, category, event_type, message, swarm, agent, metadata)
+    # Persist to the durable, cross-process store (SQLite by default)
+    persist_durably(event)
 
     # Broadcast to subscribers
     broadcast_event(event)
@@ -233,22 +233,12 @@ defmodule Genswarm.Observability.LogStore do
     {:noreply, new_state}
   end
 
-  # Persist event to SQLite for cross-process access
-  defp persist_to_sqlite(level, category, event_type, message, swarm, agent, metadata) do
-    try do
-      Genswarm.CLI.SwarmRegistry.log_event(
-        level,
-        category,
-        event_type,
-        message,
-        swarm: swarm,
-        agent: agent,
-        metadata: metadata
-      )
-    rescue
-      # Don't crash if SQLite fails
-      _ -> :ok
-    end
+  # Persist event to the durable cross-process store (SQLite by default).
+  # Observability must never take down the logging GenServer if the store fails.
+  defp persist_durably(event) do
+    Genswarm.Observability.EventStore.persist(event)
+  rescue
+    _ -> :ok
   end
 
   @impl true

@@ -2,14 +2,14 @@ defmodule GenswarmWeb.EventsController do
   @moduledoc """
   REST API controller for querying events.
 
-  Reads from the shared SQLite event log (`SwarmRegistry`) rather than the
-  in-node `LogStore` ETS, so the API surfaces events from every swarm — including
-  daemon swarms running in other BEAM nodes — not just in-process ones.
+  Reads from the durable, cross-process `EventStore` (SQLite by default) rather
+  than the in-node `LogStore` ETS, so the API surfaces events from every swarm —
+  including daemon swarms running in other BEAM nodes — not just in-process ones.
   """
 
   use GenswarmWeb, :controller
 
-  alias Genswarm.CLI.SwarmRegistry
+  alias Genswarm.Observability.EventStore
 
   @doc """
   Lists events with optional filtering.
@@ -26,7 +26,7 @@ defmodule GenswarmWeb.EventsController do
   """
   def index(conn, params) do
     query_opts = build_query_opts(params)
-    events = SwarmRegistry.query_events(query_opts)
+    events = EventStore.query(query_opts)
 
     json(conn, %{
       events: Enum.map(events, &format_event/1),
@@ -46,7 +46,7 @@ defmodule GenswarmWeb.EventsController do
       |> Map.put("swarm", swarm_name)
       |> build_query_opts()
 
-    events = SwarmRegistry.query_events(query_opts)
+    events = EventStore.query(query_opts)
 
     json(conn, %{
       events: Enum.map(events, &format_event/1),
@@ -67,7 +67,7 @@ defmodule GenswarmWeb.EventsController do
       |> Map.put("agent", agent_name)
       |> build_query_opts()
 
-    events = SwarmRegistry.query_events(query_opts)
+    events = EventStore.query(query_opts)
 
     json(conn, %{
       events: Enum.map(events, &format_event/1),

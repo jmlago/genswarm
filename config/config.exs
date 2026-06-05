@@ -23,6 +23,10 @@ config :logger, :console,
 # Use Jason for JSON parsing
 config :phoenix, :json_library, Jason
 
+# Durable cross-process event store backend (see Genswarm.Observability.EventStore).
+# Swap to a Postgres/Redis/batching backend here as load grows.
+config :genswarm, :event_store, Genswarm.Observability.EventStore.Sqlite
+
 # Genswarm specific configuration
 config :genswarm,
   # Default path to subzeroclaw binary

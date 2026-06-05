@@ -41,6 +41,11 @@ defmodule Genswarm.Application do
       # Note: Phoenix endpoint is optional, started via `swarm dashboard`
     ]
 
+    # Any processes the configured EventStore backend needs (none for the
+    # stateless SQLite default; a batching/pooled/Redis backend would add a
+    # buffer or pool here).
+    children = children ++ Genswarm.Observability.EventStore.child_specs()
+
     opts = [strategy: :one_for_one, name: Genswarm.Supervisor]
     result = Supervisor.start_link(children, opts)
 
