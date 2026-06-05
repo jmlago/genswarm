@@ -60,12 +60,16 @@ genswarms start <config.exs>          # Start swarm as daemon (background proces
 genswarms stop <name>                 # Stop swarm
 genswarms restart <name>              # Restart swarm
 genswarms restart <name> --delete     # Restart with clean slate (delete old data)
-genswarms pause <name>                # Pause swarm (freeze containers)
-genswarms resume <name>               # Resume paused swarm
 genswarms status [name]               # Show status
-genswarms delete <name>               # Delete swarm and all its data
-genswarms clean                       # Clean up stopped/crashed swarms
-genswarms clean --all                 # Also clear all events
+
+# Swarm Management — Mix-task only (NOT escript subcommands; `genswarms pause`
+# etc. fall through to "Unknown command" — see dispatch/2 in lib/genswarms/cli.ex)
+mix genswarms.pause <name>            # Pause swarm (freeze Docker containers)
+mix genswarms.resume <name>           # Resume paused swarm
+mix genswarms.delete <name>           # Delete swarm and all its data
+mix genswarms.clean                   # Clean up stopped/crashed swarms
+mix genswarms.clean --all             # Also clear all events
+mix genswarms.restart_agent <swarm> <agent>  # Restart one agent (needs API server)
 
 # Agent Operations
 genswarms logs [swarm] [agent]        # Stream logs

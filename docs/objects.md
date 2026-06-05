@@ -49,13 +49,19 @@ end
 | `handle_info(msg, state)` | no | Handle process messages such as timers. |
 | `terminate(reason, state)` | no | Cleanup when the object stops. |
 
-`handle_info/2` and `terminate/2` are optional callbacks; the `ObjectServer`
-checks at runtime whether the handler exports them before calling them.
+`handle_info/2` and `terminate/2` are the only optional callbacks — the
+behaviour declares `@optional_callbacks [terminate: 2, handle_info: 2]`. The
+`ObjectServer` checks at runtime (with `function_exported?/3`) whether the
+handler exports them before calling them, so you only implement them if you
+need them.
 
 ## init/1
 
 `init/1` is called once when the `ObjectServer` starts. `config` is the map you
 provide in the swarm configuration under the object's `:config` key.
+
+The behaviour's published typespec covers the two-tuple and the single-send
+forms:
 
 ```elixir
 @callback init(config :: map()) ::
@@ -64,16 +70,19 @@ provide in the swarm configuration under the object's `:config` key.
             | {:error, reason}
 ```
 
+In addition, the `ObjectServer` also honors a `{:multi, messages}` form at
+runtime (see the table below).
+
 | Return value | Semantics |
 |--------------|-----------|
 | `{:ok, state}` | Initialize with `state`; do nothing else. |
 | `{:ok, state, {:send, to, content}}` | Initialize, then send an opening message to `to`. |
 | `{:ok, state, {:multi, messages}}` | Initialize, then send several opening messages (see below). |
-| `{:error, reason}` | Initialization failed; the object enters an error state. |
+| `{:error, reason}` | Initialization failed; the object enters its `:error` state and drops any messages delivered to it. |
 
 The `{:ok, state, {:send, to, content}}` form is how an object kicks off a
-conversation. The tic-tac-toe game uses it to send the first turn to the opening
-player:
+conversation. The tic-tac-toe game (`examples/tic-tac-toe/objects/game.ex`) uses
+it to send the first turn to the opening player:
 
 ```elixir
 @impl true
@@ -86,7 +95,9 @@ end
 
 The `{:ok, state, {:multi, messages}}` form accepts a list of
 `{:send, to, content}` and `{:broadcast, content}` tuples and dispatches all of
-them after initialization.
+them after initialization. (Bare `{target, msg}` pairs are *not* accepted in the
+`init/1` multi form; that shorthand only exists for `handle_message/3`'s
+`:send_many`.)
 
 ## handle_message/3
 
@@ -94,6 +105,8 @@ them after initialization.
 sender's name (an atom), `content` is the message string, and `state` is the
 current handler state. The return tuple tells the `ObjectServer` what to send
 and how to update state.
+
+The behaviour's published typespec covers the four common forms:
 
 ```elixir
 @callback handle_message(from :: atom(), content :: String.t(), state) ::
@@ -104,7 +117,7 @@ and how to update state.
 ```
 
 The handler may also return the multi-message tuples below. The full set of
-return tuples honored by the `ObjectServer` is:
+return tuples honored by the `ObjectServer` dispatch is:
 
 | Return tuple | Semantics |
 |--------------|-----------|
@@ -117,14 +130,15 @@ return tuples honored by the `ObjectServer` is:
 
 All routed targets are subject to the topology: a message only reaches `to` if
 there is an edge from this object to `to` (or `to` is a system object — see
-below).
+below). After any of these returns the object goes back to its `:idle` state and
+its `message_count` is incremented.
 
 ### `:send_many` vs `:multi`
 
 Both forms emit multiple messages from a single callback return. They differ
 only in the item shapes they accept.
 
-`:multi` accepts tagged tuples only:
+`:multi` accepts tagged tuples only — `{:send, to, msg}` and `{:broadcast, msg}`:
 
 ```elixir
 {:multi,
@@ -134,8 +148,8 @@ only in the item shapes they accept.
  ], new_state}
 ```
 
-`:send_many` accepts tagged tuples *and* bare `{target, msg}` pairs, so you can
-mix styles:
+`:send_many` accepts those tagged tuples *and* bare `{target, msg}` pairs, so you
+can mix styles:
 
 ```elixir
 {:send_many,
@@ -151,7 +165,8 @@ Use `:send_many` when it is convenient to build a keyword-like list of
 
 ### Worked example: a turn-validating game object
 
-The tic-tac-toe `Game` object shows the common return tuples in one handler. It
+The tic-tac-toe `Game` object (`examples/tic-tac-toe/objects/game.ex`, module
+`TicTacToe.Objects.Game`) shows the common return tuples in one handler. It
 replies to the sender on an invalid move, sends the next turn to the other
 player on a valid move, and broadcasts the final result when the game ends.
 
@@ -160,7 +175,7 @@ player on a valid move, and broadcasts the final result when the game ends.
 def handle_message(from, content, state) do
   cond do
     state.game_over ->
-      {:reply, encode(:error, "Game over."), state}
+      {:reply, encode(:error, "Game over. #{winner_msg(state.winner)}"), state}
 
     from != state.turn ->
       {:reply, encode(:error, "Not your turn, waiting for #{state.turn}"), state}
@@ -208,14 +223,15 @@ end
 ```
 
 A `:reply` returned from `handle_info/2` has no original sender to reply to, so
-the `ObjectServer` treats it as a state-only update.
+the `ObjectServer` logs it and treats it as a state-only update.
 
 ## interface/0 introspection
 
 `interface/0` returns a map describing the actions the object supports and their
-expected input/output. It is used for display in `swarm-msg` and dashboards and
-does not affect routing. By convention each key is an action name pointing at a
-map with `:input` and `:output` descriptions.
+expected input/output. It is surfaced through `ObjectServer.get_interface/2` for
+display in tooling and dashboards and does not affect routing. By convention each
+key is an action name pointing at a map with `:input` and `:output`
+descriptions.
 
 ```elixir
 @impl true
@@ -237,12 +253,20 @@ Handlers can write structured entries to the centralized event log via
 ```elixir
 alias Genswarms.Objects.ObjectServer
 
-ObjectServer.log(:info, "example-swarm", :game, "Move accepted", %{player: from})
+ObjectServer.log(:info, "tic-tac-toe", :game, "Move accepted", %{player: from})
 ```
 
 The arguments are `level`, `swarm_name`, `object_name`, `message`, and an
-optional `metadata` map. See [observability.md](observability.md) for how these
-events are queried and streamed.
+optional `metadata` map (defaults to `%{}`):
+
+```elixir
+@spec log(level, swarm_name, object_name, message, metadata \\ %{}) :: term()
+```
+
+Internally this calls `LogStore.log/4` with `source: :object` and
+`event: :custom`, tagging the entry with the swarm and object names. See
+[observability.md](observability.md) for how these events are queried and
+streamed.
 
 ## Declaring objects in a swarm
 
@@ -250,19 +274,33 @@ Objects are listed under the `:objects` key of a swarm configuration. Each entry
 needs a `:name` and a `:handler`; the optional `:config` map is passed verbatim
 to the handler's `init/1`. Objects appear in `:topology` edges just like agents.
 
+The snippet below is the tic-tac-toe swarm
+(`examples/tic-tac-toe/tic_tac_toe_swarm.exs`), trimmed for brevity:
+
 ```elixir
+# Load the object handler module before referencing it in config.
 Code.require_file("objects/game.ex", __DIR__)
 
 %{
-  name: "example-swarm",
+  name: "tic-tac-toe",
   agents: [
-    %{name: :player_x, backend: {:docker, "szc-agent-code:latest"}, skills: ["player_x.md"]},
-    %{name: :player_o, backend: {:docker, "szc-agent-code:latest"}, skills: ["player_o.md"]}
+    %{
+      name: :player_x,
+      backend: {:docker, "szc-agent-code:latest", %{memory_limit: "512m"}},
+      skills: [Path.join([__DIR__, "skills", "player_x.md"])],
+      model: "minimax/minimax-m2.7"
+    },
+    %{
+      name: :player_o,
+      backend: {:docker, "szc-agent-code:latest", %{memory_limit: "512m"}},
+      skills: [Path.join([__DIR__, "skills", "player_o.md"])],
+      model: "minimax/minimax-m2.7"
+    }
   ],
   objects: [
     %{
       name: :game,
-      handler: ExampleSwarm.Objects.Game,
+      handler: TicTacToe.Objects.Game,
       config: %{}
     }
   ],
@@ -275,8 +313,8 @@ Code.require_file("objects/game.ex", __DIR__)
 }
 ```
 
-The `config` map is how you parameterize an object. The bridge object, for
-instance, receives its swarm name and a routing table:
+The `config` map is how you parameterize an object. A bridge object, for
+instance, might receive its swarm name and a routing table:
 
 ```elixir
 objects: [
@@ -304,7 +342,7 @@ when no explicit topology edge exists:
 | `:tick` | Clock / scheduling. |
 | `:gateway` | External gateway. |
 
-These are defined as `@system_objects` in
+These are defined as `@system_objects [:metrics, :tick, :gateway]` in
 `lib/genswarms/routing/router.ex`. Any node may send to them without declaring an
 edge; define a handler for them only if you want to act on what they receive.
 
@@ -313,3 +351,4 @@ edge; define a handler for them only if you want to act on what they receive.
 - [configuration.md](configuration.md) — declaring objects and topology
 - [messaging.md](messaging.md) — how messages are routed between nodes
 - [programmatic.md](programmatic.md) — driving swarms from Elixir code
+- [observability.md](observability.md) — querying and streaming object log events

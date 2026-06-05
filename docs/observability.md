@@ -37,6 +37,14 @@ To make a new transition observable, emit a telemetry event under
 `Genswarms.Observability.TelemetryBridge` `known_events/0`. Nothing else: no
 controller, no broadcast, no `LogStore` call at the call site.
 
+The bridge attaches **once at application start**
+(`Genswarms.Observability.TelemetryBridge.attach/0`, called by
+`Genswarms.Application.start/2` after the supervision tree is up). It attaches to
+the concrete `[:genswarms, domain, event]` triples in `known_events/0` — not a
+prefix — so unrelated `:genswarms` telemetry is never swept in. The handler is
+wrapped in a rescue: if a translation fails it logs a warning and drops the event
+rather than taking down the emitting process.
+
 The bridge derives the log `level` from the event name. When the level depends on
 the outcome (a partial swarm start, an unexpected agent exit), the emitter passes
 `level:` in the telemetry metadata to set it explicitly; the bridge strips that key
@@ -44,16 +52,33 @@ before persisting, so it never leaks into the payload.
 
 ## Event taxonomy
 
-`level` is derived from the event name (`*error*`/`*failed*` -> `:error`,
-`*invalid*`/`*not_found*`/`*full*` -> `:warning`, otherwise `:info`). `category` is
-the telemetry domain (`:router` is normalized to `:routing`).
+`level` is derived from the event name. The exact rules
+(`TelemetryBridge.level_for/1`), checked in order against the event-name string:
+
+| Substring in event name | Level |
+|---|---|
+| contains `error` | `:error` |
+| contains `failed` | `:error` |
+| contains `invalid` | `:warning` |
+| contains `not_found` | `:warning` |
+| contains `full` | `:warning` |
+| otherwise | `:info` |
+
+A `level:` key in the telemetry metadata overrides this derivation for that event.
+
+`category` is the telemetry domain, with one normalization: the `:router` domain
+is mapped to the `:routing` category. All other domains pass through unchanged
+(`:swarm`, `:agent`, `:object`).
+
+The full vocabulary the bridge knows
+(`Genswarms.Observability.TelemetryBridge.known_events/0`):
 
 | Domain (category) | Event | Level | Meaning |
 |---|---|---|---|
-| `swarm` | `swarm_started` | info | swarm finished starting (metadata `:status` = `running`/`error`) |
+| `swarm` | `swarm_started` | info | swarm finished starting (emitters may pass `level:` for a partial start) |
 | `swarm` | `swarm_stopped` | info | swarm torn down |
 | `agent` | `agent_started` | info | agent process up |
-| `agent` | `agent_stopped` | info | agent process exited (metadata `:exit_status`) |
+| `agent` | `agent_stopped` | info | agent process exited |
 | `agent` | `agent_error` | error | agent backend/runtime error |
 | `agent` | `agent_added` | info | agent added to a running swarm |
 | `agent` | `agent_removed` | info | agent removed from a running swarm |
@@ -68,9 +93,23 @@ the telemetry domain (`:router` is normalized to `:routing`).
 | `routing` | `message_broadcast` | info | broadcast routed (`:from`) |
 | `routing` | `invalid_route` | warning | message rejected by topology |
 
-Every event carries `:swarm` in its metadata; agent/object events also carry
-`:agent`/`:object` (lifted to dedicated columns by `LogStore`). Remaining metadata
-is kept JSON-friendly in the event's `metadata` blob.
+Every event carries `:swarm` in its metadata. Agent events also carry `:agent`,
+and object events carry `:object`. The bridge lifts the swarm name into the event's
+`:swarm` field and lifts **either** the agent name **or** the object name into the
+event's `:agent` field (`agent: metadata[:agent] || metadata[:object]`) — there is
+no separate object column, so object events appear under the same `agent` field /
+`-a` / `?agent=` filter as agents. The bridge then drops `:swarm`, `:agent`, and
+`:object` from the remaining metadata (and the `:level` override key) and keeps the
+rest as a JSON-friendly `metadata` blob.
+
+> **Category naming note.** The `:object` category is real — the bridge emits it
+> and `genswarms events --category object` filters on it. For historical reasons
+> the `LogStore` `@type category` typespec and the `EventsController` /
+> [rest-api.md](rest-api.md) `category` docs enumerate only
+> `backend | routing | agent | swarm | system` and omit `object`. The omission is
+> documentation/typespec drift, not a runtime restriction: object-category events
+> are persisted and queryable through every path. Use the taxonomy above as the
+> authoritative list.
 
 ## Telemetry events and metrics
 
@@ -95,8 +134,13 @@ metadata that always includes `:swarm` (and `:agent` for agent events). The
 | `genswarms.router.invalid_route.count` | counter | `:swarm` | `[:genswarms, :router, :invalid_route]` |
 
 The `genswarms.swarm.agent_count` last-value is produced by a periodic
-`telemetry_poller` measurement (every 10s) that polls `SwarmManager.list/0`.
-Standard Phoenix and BEAM VM metrics (`phoenix.*`, `vm.memory.total`,
+`:telemetry_poller` measurement (period 10s) that calls
+`Genswarms.Telemetry.measure_swarms/0`, which polls `Genswarms.SwarmManager.list/0`
+and emits `[:genswarms, :swarm, :agent_count]` per swarm. (`agent_count` is a
+metrics-only event — it is **not** in `known_events/0`, so the bridge does not turn
+it into a `LogStore` event; it never appears in the queryable event stream.)
+Standard Phoenix and BEAM VM metrics (`phoenix.endpoint.*`,
+`phoenix.router_dispatch.*`, `phoenix.live_view.mount.*`, `vm.memory.total`,
 `vm.total_run_queue_lengths.*`) are also registered.
 
 ## The EventStore behaviour
@@ -109,22 +153,33 @@ single config knob.
 
 The callbacks are: `persist/1`, `query/1`, `events_since/2`, `max_event_id/0`, an
 optional `persist_many/1` (bulk write), and an optional `child_specs/0` (processes
-the backend needs supervised; the app splices them into its tree at boot).
+the backend needs supervised; the app splices them into its tree at boot via
+`EventStore.child_specs/0`).
 
 ```elixir
 @callback persist(event()) :: :ok
-@callback persist_many([event()]) :: :ok          # optional
+@callback persist_many([event()]) :: :ok                              # optional
 @callback query(keyword()) :: [event()]
 @callback events_since(since_id :: non_neg_integer(), limit :: pos_integer()) :: [event()]
 @callback max_event_id() :: non_neg_integer()
-@callback child_specs() :: [Supervisor.child_spec()]  # optional
+@callback child_specs() :: [Supervisor.child_spec()]                  # optional
+
+@optional_callbacks child_specs: 0, persist_many: 1
 ```
+
+The facade provides safe defaults for the optional callbacks: if a backend does not
+export `persist_many/1`, `EventStore.persist_many/1` falls back to N× `persist/1`;
+if it does not export `child_specs/0`, `EventStore.child_specs/0` returns `[]`. The
+event shape passed to `persist/1` is a map with `:level`, `:category`,
+`:event_type`, `:message` and optional `:swarm`, `:agent`, `:metadata`; reads
+return the same maps additionally carrying `:id` and `:timestamp` (assigned by the
+backend).
 
 ### Backends
 
 | Backend | Role |
 |---|---|
-| `EventStore.Sqlite` | Thin adapter over the `events` table in `.genswarms/swarms.db` (managed by `SwarmRegistry`). Stateless, synchronous; no supervised process. |
+| `EventStore.Sqlite` | Thin adapter over the `events` table in `.genswarms/swarms.db` (managed by `SwarmRegistry`). Stateless and synchronous — each call opens a short-lived connection — so it declares no `child_specs/0` (no supervised process). |
 | `EventStore.Buffered` | Engine-independent write-batching decorator wrapping any inner backend. The default. |
 
 The default in `config/config.exs` batches writes on top of SQLite:
@@ -138,17 +193,20 @@ config :genswarms, Genswarms.Observability.EventStore.Buffered,
   max_buffer: 1_000
 ```
 
-`EventStore.Buffered` enqueues each `persist/1` into a `Writer` GenServer and
-flushes the batch via the inner backend's `persist_many/1` on a 100ms timer (or
-sooner when `max_buffer` is reached). This keeps disk writes off `LogStore`'s
-critical path and lets the inner backend amortize them: with `EventStore.Sqlite`,
-one `open -> BEGIN -> inserts -> COMMIT -> close` per flush instead of a connection
-per event. The tradeoff is a small durability window (at most one flush interval)
-on a hard crash; the live in-node path (ETS + PubSub) is synchronous and
-unaffected. The buffer is flushed on graceful shutdown.
+`EventStore.Buffered` enqueues each `persist/1` (and `persist_many/1`) into a
+`Writer` GenServer and flushes the batch via the inner backend's `persist_many/1`
+on a 100ms timer (or sooner when `max_buffer` is reached). It also declares the
+`Writer` (plus any of the inner backend's own children) through its `child_specs/0`,
+so the app supervises it. This keeps disk writes off `LogStore`'s critical path and
+lets the inner backend amortize them: with `EventStore.Sqlite`, one
+`open -> BEGIN -> inserts -> COMMIT -> close` per flush instead of a connection per
+event. The tradeoff is a small durability window (at most one flush interval) on a
+hard crash; the live in-node path (ETS + PubSub) is synchronous and unaffected. The
+buffer is flushed on graceful shutdown via the `Writer`'s `terminate/2`.
 
-Tests run with the plain synchronous `EventStore.Sqlite` backend for determinism
-(`config/test.exs`).
+Tests run with the plain synchronous `EventStore.Sqlite` backend so that
+`persist -> query` is deterministic with no buffering (`config/test.exs` sets
+`config :genswarms, :event_store, Genswarms.Observability.EventStore.Sqlite`).
 
 To raise throughput under load, tune the buffer (fewer, larger commits in exchange
 for a slightly larger latency/durability window):
@@ -194,17 +252,26 @@ daemon swarm C --+                                                 --+
 - `GET /api/events` (and the swarm/agent variants) read SQLite, so they surface
   every swarm, daemon or in-process.
 - `Genswarms.Observability.EventRelay` runs on the monitor node. It tails new
-  SQLite rows every ~500ms (batches of 500) via `EventStore.events_since/2` and
-  re-broadcasts them onto the in-node PubSub topics, so the existing `SwarmChannel`
-  pushes them to WebSocket clients live, with no clustering required. Latency is
-  approximately the poll interval. Disable it with
-  `config :genswarms, :event_relay, false`.
+  SQLite rows every 500ms (the `:interval` default; batches of 500 via
+  `EventStore.events_since/2`) and re-broadcasts them onto the in-node PubSub
+  topics (`log_store:events` and `log_store:events:<swarm>`), mirroring
+  `LogStore.broadcast_event/1` exactly, so the existing `SwarmChannel` pushes them
+  to WebSocket clients live, with no clustering required. It starts from the
+  current tip on boot (relays only new events going forward; history comes from the
+  subscribe-time snapshot). Latency is approximately the poll interval.
 - A WebSocket client gets recent history from the snapshot on subscribe (also read
   from SQLite) and the live tail from the relay.
 
-Run the relay only on a monitor node that does not host swarms in-process. There
-the in-node `LogStore` never broadcasts swarm events (they happen in the daemons),
-so the relay is the sole live source and there is no double-delivery.
+The relay is started by `Genswarms.Application.start_web_server/1`
+(`maybe_start_event_relay/0`) — and only there, so daemons (which never start the
+web server) do not run it. Run it only on a monitor/API node that does not host
+swarms in-process: there the in-node `LogStore` never broadcasts swarm events (they
+happen in the daemons), so the relay is the sole live source and there is no
+double-delivery. To disable it explicitly, set:
+
+```elixir
+config :genswarms, :event_relay, false
+```
 
 ### Still node-local (known limits)
 
@@ -234,8 +301,8 @@ genswarms events --errors             # errors only
 genswarms events --follow             # stream in real time
 ```
 
-The `--category` values map 1:1 to the taxonomy above. See [cli.md](cli.md) for the
-full command reference.
+The `--category` values map 1:1 to the taxonomy above (and include `object`). See
+[cli.md](cli.md) for the full command reference.
 
 ### REST API
 
@@ -244,7 +311,7 @@ every swarm:
 
 | Endpoint | Returns |
 |---|---|
-| `GET /api/events` | recent events, filterable by `level`/`category`/`event_type` |
+| `GET /api/events` | recent events, filterable by `level`/`category`/`swarm`/`agent`/`event_type`/`minutes`/`limit` |
 | `GET /api/swarms/:name/events` | events for one swarm |
 | `GET /api/swarms/:name/agents/:agent_name/events` | events for one agent |
 
@@ -262,11 +329,14 @@ See [rest-api.md](rest-api.md) for full details.
 
 ### Real-time (WebSocket / PubSub)
 
-On the `swarm:<name>` channel, subscribe and patch a view from the push stream:
+On the `swarm:<name>` channel, subscribe and patch a view from the push stream.
+The channel subscribes to the per-swarm PubSub topics on join (`swarm:<name>`,
+plus `:output`, `:routing`, and `:status` sub-topics) and pushes these
+server→client messages (all confirmed in `SwarmChannel.handle_info/2`):
 
 | Push | Source |
 |---|---|
-| `event`, `log_entry` | `LogStore` (the whole taxonomy, after `subscribe_events`/`subscribe_logs`) |
+| `event`, `log_entry` | `LogStore` (the whole taxonomy, after `subscribe_events` / `subscribe_logs`) |
 | `agent_output` | agent stdout |
 | `agent_status` | agent state transition |
 | `message_routed`, `message_broadcast` | router |

@@ -7,7 +7,8 @@ backend, designed for 10k+ agents on a single host). This page covers the build
 targets, the preset catalogue, and the internals that assemble each environment.
 
 Everything here is reproducible: images and sandbox bases are pinned by Nix
-flake inputs, so the same tools resolve identically across machines.
+flake inputs (`nixpkgs` nixos-24.11), so the same tools resolve identically
+across machines.
 
 ## Build targets
 
@@ -38,7 +39,20 @@ Each image also bundles, regardless of preset: `bashInteractive`, `coreutils`,
 `cacert` (SSL certificates), the Nix package manager (so agents can run
 `nix-shell -p ...` at runtime), the `szc-wrapper` protocol script, and the
 `swarm-msg` messaging CLI. Working directory is `/workspace`; `/workspace`,
-`/skills`, and `/tmp` are declared as volumes.
+`/skills`, and `/tmp` are declared as volumes. The image also sets
+`SSL_CERT_FILE`/`NIX_SSL_CERT_FILE`, `NIX_PATH`, and `TMPDIR` so HTTPS and
+runtime `nix-shell` both work out of the box (see the `config.Env` block in
+`nix/container.nix`).
+
+### Building on demand
+
+You don't have to pre-build images. When a Docker agent starts, the backend
+(`lib/genswarms/backends/docker_backend.ex`) maps the agent's `presets` to a
+pre-built image name and, if the image is missing locally, runs
+`nix build .#agentContainer-<name>` and `docker load` automatically before
+launching. Only the eight preset combinations in the table above have a direct
+mapping; any other combination falls back to the `full` image at build time and
+the `szc-agent-base:latest` image at run time.
 
 ### Custom images
 
@@ -66,9 +80,11 @@ lives in `nix/container.nix` and is re-exported via
 ```
 
 `mkAgentContainer` accepts `name`, `presets` (default `[ "base" ]`), `tools`
-(individual names resolved against the tools map, then nixpkgs), and
-`extraPackages` (direct nixpkgs derivations). Build with
-`nix build .#my-agent && docker load < result`.
+(individual names resolved against the tools map, then nixpkgs), `extraPackages`
+(direct nixpkgs derivations), and `subzeroclawBinary` (optional path to a
+subzeroclaw binary to bake in). Build with
+`nix build .#my-agent && docker load < result`. The resulting image is named
+`szc-agent-<name>:latest`.
 
 ### Orchestrator release
 
@@ -80,9 +96,10 @@ itself is packaged as a Nix mix release (not a Docker image — there is no
 nix build .#orchestrator    # builds a prod mix release of the orchestrator
 ```
 
-For day-to-day use you usually run the orchestrator directly from the dev shell
-(`genswarms up` / `mix phx.server`) rather than from a built release — see
-[getting-started.md](getting-started.md).
+There is also a `genswarms-cli` package that builds the CLI escript as a
+standalone derivation. For day-to-day use you usually run the orchestrator
+directly from the dev shell (`genswarms up` / `mix phx.server`) rather than from
+a built release — see [getting-started.md](getting-started.md).
 
 ## Tool presets
 
@@ -104,12 +121,14 @@ NixOS agent module. Agents reference presets by name in their config.
 `szc-wrapper` needs `jq` for JSON protocol translation.
 
 Additional presets also exist in `nix/tool-presets.nix` for specialized agents:
-`docs` (pandoc, texlive, poppler_utils, ghostscript, imagemagick), `network`
-(curl, wget, httpie, netcat, socat, openssh, rsync, aria2), `system` (htop,
-btop, lsof, strace, procps, psmisc, pciutils, usbutils), `security` (openssl,
-gnupg, age, sops, pass), `containers` (docker-client, podman, skopeo, dive),
-`cloud` (awscli2, google-cloud-sdk, azure-cli, kubectl, k9s, terraform), and
-`ai` (openai, anthropic, tiktoken Python packages).
+`docs` (pandoc, texlive scheme-small, poppler_utils, ghostscript, imagemagick),
+`network` (curl, wget, httpie, netcat, socat, openssh, rsync, aria2), `system`
+(htop, btop, lsof, strace, procps, psmisc, pciutils, usbutils), `security`
+(openssl, gnupg, age, sops, pass), `containers` (docker-client, podman, skopeo,
+dive), `cloud` (awscli2, google-cloud-sdk, azure-cli, kubectl, k9s, terraform),
+and `ai` (openai, anthropic, tiktoken Python packages). These are not bundled
+into any pre-built image except where the table above lists them; reach them via
+a custom image or a custom sandbox base.
 
 ### Individual tools
 
@@ -173,10 +192,33 @@ packages plus the same core set as containers (`bashInteractive`, `coreutils`,
 nix build .#sandboxBase-code
 ```
 
-Available sandbox base targets (from `flake.nix`): `sandboxBase-base`,
-`sandboxBase-web`, `sandboxBase-code`, `sandboxBase-data`, `sandboxBase-python`,
-`sandboxBase-node`, `sandboxBase-web-code`, `sandboxBase-code-python`,
-`sandboxBase-data-python`, `sandboxBase-full`, and `sandboxBase-devops`.
+The sandbox bases actually defined in `nix/bwrap-sandbox.nix` (and therefore
+buildable) are:
+
+| Flake target | Presets |
+|--------------|---------|
+| `sandboxBase-base` | `base` |
+| `sandboxBase-web` | `base`, `web` |
+| `sandboxBase-code` | `base`, `code` |
+| `sandboxBase-data` | `base`, `data` |
+| `sandboxBase-python` | `base`, `python`, `data` |
+| `sandboxBase-node` | `base`, `node`, `web` |
+| `sandboxBase-full` | `base`, `web`, `code`, `data`, `python`, `node` |
+| `sandboxBase-devops` | `base`, `code`, `containers`, `cloud` |
+
+> **Note:** `flake.nix` also declares `sandboxBase-web-code`,
+> `sandboxBase-code-python`, and `sandboxBase-data-python`, but no matching
+> `sandboxLib.web-code` / `code-python` / `data-python` attributes exist in
+> `nix/bwrap-sandbox.nix`, so those three targets fail to evaluate. To get a
+> mixed-preset base (for example `code` + `python`), build a custom base with
+> `mkSandboxBase` (see *Preset resolution and custom presets* below) rather than
+> relying on those declarations.
+
+At runtime the bases are resolved by *directory name* under
+`/run/swarm/sandbox-base/`, not by flake target name. The
+`services.subzeroclaw-bwrap` NixOS module (`nix/bwrap-module.nix`) symlinks the
+bases listed in its `sandboxPresets` option into that directory; the directory
+name for a multi-preset agent is the sorted, `-`-joined preset list (see below).
 
 ### Overlay assembly
 
@@ -188,7 +230,7 @@ creates a directory tree and mounts the union:
 /run/swarm/
   sandbox-base/<preset>   # symlink to the pre-built Nix environment (lowerdir)
   agents/<sandbox-id>/
-    upper/                # per-agent writable layer
+    upper/                # per-agent writable layer (copy-on-write)
     work/                 # overlayfs workdir
     merged/               # union mount the agent actually runs in
 ```
@@ -198,11 +240,33 @@ fuse-overlayfs -o lowerdir=<base>,upperdir=<upper>,workdir=<work> <merged>
 ```
 
 The shared sandbox base is the read-only lower layer; each agent gets a private
-writable upper layer, so thousands of agents share one copy of the tools. DNS
-config is copied into the upper layer for network access. The agent runs inside
-`merged/` via Bubblewrap, with the `szc-wrapper` bind-mounted at
-`/usr/local/bin/szc-wrapper`. On shutdown the overlay is unmounted and the
-per-agent directories removed.
+writable upper layer, so thousands of agents share one copy of the tools. Before
+the agent starts, `/etc/resolv.conf` and `/etc/hosts` are copied into the upper
+layer's `etc/` so DNS and hostname resolution work (the base `/etc` is
+read-only). The agent then runs inside `merged/` via Bubblewrap, with the
+`szc-wrapper` script bind-mounted at `/usr/local/bin/szc-wrapper` and the
+subzeroclaw binary at `/usr/local/bin/subzeroclaw`. On shutdown the overlay is
+unmounted (`fusermount -u`) and the per-agent directory tree is removed
+(`File.rm_rf`).
+
+### Resource isolation
+
+Each agent is placed in its own systemd cgroup so a runaway agent can't starve
+its neighbors. `lib/genswarms/backends/bwrap/cgroup_manager.ex` wraps the bwrap
+command in a transient `systemd-run --user` unit under the `subzeroclaw.slice`,
+named `szc-<sandbox-id>`. The backend config keys map to systemd properties:
+
+| Config key | Default | systemd property |
+|------------|---------|------------------|
+| `memory_limit` | `"256M"` | `MemoryMax` |
+| `cpu_shares` | `100` | `CPUWeight` |
+| `tasks_max` | `50` | `TasksMax` |
+
+Because every scope lives under one slice, you can monitor aggregate usage with
+`systemd-cgtop` or via `CgroupManager.get_aggregate_stats/0`, and stop a single
+agent by terminating its scope. Per-agent memory, CPU, and task counts are read
+directly from the cgroup filesystem (`memory.current`, `cpu.stat`,
+`pids.current`).
 
 ### Preset resolution and custom presets
 
@@ -215,27 +279,36 @@ registered by a downstream project:
 Application.put_env(:genswarms, :extra_preset_dirs, ["/my/presets"])
 ```
 
-If a named preset is not found, resolution falls back to the `base` layer. You
-can also point an agent at a fully custom base layer directly with a `{:custom,
-"/path/to/base"}` entry in its `presets` list — this path is used verbatim as
-the overlay lowerdir.
+If a named preset directory is not found in any search dir, resolution falls
+back to the `base` layer (logging a warning). You can also point an agent at a
+fully custom base layer directly with a `{:custom, "/path/to/base"}` entry in
+its `presets` list — this path is expanded and used verbatim as the overlay
+lowerdir, and `{:custom, _}` entries are excluded from the sorted directory-name
+computation.
 
 To build a domain-specific base, copy `nix/preset-template.nix` into your
-project, set `name`, choose `presets`, add `extraPackages`, build it, and symlink
-the result into a preset search directory:
+project as `preset.nix`, set `name`, choose `presets`, add `extraPackages`,
+build it, and symlink the result into a preset search directory:
 
 ```bash
 nix-build preset.nix
 ln -sf $(readlink result) ./presets/solidity
 ```
 
+The template uses `sandboxLib.mkSandboxBase` (also re-exported as
+`genswarms.lib.<system>.mkSandboxBase`), so a custom base is byte-for-byte
+compatible with the built-in ones.
+
 ### Backend config keys
 
 The bwrap config separates backend keys from domain keys. Backend keys
 recognized by the sandbox: `workspace`, `presets`, `memory_limit` (default
 `"256M"`), `cpu_shares` (default `100`), `tasks_max` (default `50`),
-`extra_ro_binds` (`[{host_path, container_path}]`), and `extra_path`
-(directories appended to the in-sandbox PATH).
+`extra_ro_binds` (`[{host_path, container_path}]`, mounted read-only and skipped
+silently if the host path is missing), `extra_path` (directories prepended to
+the in-sandbox PATH, ahead of `/bin:/usr/local/bin`), `extra_env`
+(`%{KEY => value}` extra environment variables), and `subzeroclaw_path` (path to
+the subzeroclaw binary).
 
 ```elixir
 %{
@@ -253,8 +326,8 @@ recognized by the sandbox: `workspace`, `presets`, `memory_limit` (default
 
 See [backends.md](backends.md) for the complete bwrap key reference, binary path
 resolution, and host requirements (the `services.subzeroclaw-bwrap` NixOS module
-in `nix/bwrap-module.nix` provisions kernel limits, the `/run/swarm` tmpfs, and
-symlinks the sandbox bases).
+in `nix/bwrap-module.nix` provisions kernel limits, the `/run/swarm` tmpfs, the
+`subzeroclaw.slice`, and symlinks the sandbox bases).
 
 ## See also
 

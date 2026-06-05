@@ -18,7 +18,7 @@ Genswarms.Supervisor (one_for_one)
 ├── Phoenix.PubSub (name: Genswarms.PubSub)     (message broadcasting)
 ├── Genswarms.Observability.LogStore            (centralized event logging)
 ├── Genswarms.Backends.Bwrap.AgentTelemetry     (ETS ring buffer, 10k+ scale)
-├── Registry (name: Genswarms.AgentRegistry)    (unique-key process lookup)
+├── Registry (keys: :unique, name: Genswarms.AgentRegistry)   (process lookup)
 ├── Genswarms.Skills.SkillsManager              (ETS-backed skill files)
 ├── Genswarms.Routing.Router                    (inter-agent message routing)
 ├── DynamicSupervisor (name: Genswarms.AgentSupervisor, one_for_one)
@@ -30,6 +30,8 @@ Genswarms.Supervisor (one_for_one)
 └── (EventStore.child_specs/0)                  (backend-dependent; none for
                                                  the default stateless SQLite)
 ```
+
+Before the children start, `Genswarms.Application.start/2` also calls `Genswarms.CLI.EnvManager.auto_load/0` to load a `.env` file if one is present.
 
 After the tree is up, `Genswarms.Observability.TelemetryBridge.attach/0` wires the telemetry event stream into `LogStore` so events are durable, queryable, and streamable over WebSocket.
 
@@ -60,10 +62,10 @@ Genswarms.AgentSupervisor (DynamicSupervisor)
    └── ObjectServer (per object, registered as {swarm_name, object_name})
 ```
 
-- **`Genswarms.Agents.AgentSupervisor`** and **`Genswarms.Objects.ObjectSupervisor`** are not GenServers; they are helper modules whose `start_*`/`stop_*`/`list_*` functions call `DynamicSupervisor.start_child/2` against the shared `Genswarms.AgentSupervisor` and look up processes in `Genswarms.AgentRegistry`.
+- **`Genswarms.Agents.AgentSupervisor`** and **`Genswarms.Objects.ObjectSupervisor`** are not GenServers; they are helper modules whose `start_*`/`stop_*`/`list_*` functions call `DynamicSupervisor.start_child/2` against the shared `Genswarms.AgentSupervisor` and look up processes in `Genswarms.AgentRegistry`. Both modules hardcode `@supervisor Genswarms.AgentSupervisor`, which is why agents and objects share one supervisor.
 - **`AgentServer`** (`lib/genswarms/agents/agent_server.ex`) is a GenServer per agent. On init it starts the configured backend and links a `Genswarms.Agents.LogWatcher`, which polls the agent's logs and `.outbox/` directory and routes outgoing messages through the `Router`.
 - **`ObjectServer`** wraps a module implementing the `ObjectHandler` behaviour; objects participate in the same topology as agents but execute deterministic Elixir instead of LLM calls.
-- **`Router`** validates and routes inter-agent messages according to the swarm's topology adjacency map. The system objects `:metrics`, `:tick`, and `:gateway` are always routable without explicit topology edges.
+- **`Router`** (`lib/genswarms/routing/router.ex`) is a GenServer that holds each swarm's topology as an adjacency map and validates inter-agent messages against the allowed edges before delivering. The system objects `:metrics`, `:tick`, and `:gateway` (the `@system_objects` list in `router.ex`) are always routable without explicit topology edges.
 
 ## API-first design
 
@@ -71,9 +73,9 @@ The Phoenix layer exposes a pure JSON REST API plus a WebSocket channel for real
 
 The endpoint is optional and lifecycle-managed at runtime rather than supervised statically:
 
-- `Genswarms.Application.start_web_server/1` adds `GenswarmsWeb.Endpoint` as a dynamic child of `Genswarms.Supervisor` (default port `4000`, overridable via `PORT`).
-- When the web server starts on the monitor/API node, it also starts `Genswarms.Observability.EventRelay`, which tails the shared SQLite event log and re-broadcasts new events to WebSocket clients — so the API node can stream events produced by daemon swarms running in other BEAM instances.
-- `stop_web_server/0` terminates the relay and the endpoint.
+- `Genswarms.Application.start_web_server/1` adds `GenswarmsWeb.Endpoint` as a dynamic child of `Genswarms.Supervisor` (default port `4000`, overridable via the `PORT` env var or the `:port` option). Calling it twice returns `{:error, :already_running}`.
+- When the web server starts on the monitor/API node, it also starts `Genswarms.Observability.EventRelay` (unless `config :genswarms, :event_relay` is set to `false`), which tails the shared SQLite event log and re-broadcasts new events to WebSocket clients — so the API node can stream events produced by daemon swarms running in other BEAM instances.
+- `stop_web_server/0` terminates the relay and the endpoint, returning `{:error, :not_running}` if the server is not up.
 
 ```text
 External client (React, Vue, CLI)        Genswarms API node (Phoenix)
@@ -84,21 +86,30 @@ External client (React, Vue, CLI)        Genswarms API node (Phoenix)
         │                                        └── SwarmRegistry (SQLite reads/writes)
 ```
 
+`EventRelay` re-broadcasts each newly-persisted event onto the same PubSub topics (`log_store:events` and `log_store:events:<swarm>`) that `LogStore` uses in-node, so the existing `SwarmChannel` delivers them to WebSocket clients unchanged. It polls on a configurable interval (default 500 ms) and is intended to run **only** on a monitor/API node that does not host swarms in-process, avoiding double-delivery.
+
 See `docs/rest-api.md` and `docs/observability.md` for the API surface and event model.
 
 ## Daemon model
 
 Swarms run as **independent OS processes** (daemons), separate from the API node. This isolates a swarm's BEAM from the API server and from other swarms, and lets the CLI manage swarms without a running dashboard.
 
+The CLI is available two ways, and both reach the same task implementations:
+
+- The built escript binary: `genswarms <command> ...` (built with `mix escript.build`; `main_module: Genswarms.CLI`, output name `genswarms`).
+- The Mix wrapper task: `mix genswarms <command> ...`, which dispatches each subcommand from `Mix.Tasks.Genswarms.run/1`.
+
+The examples below use the escript form (`genswarms ...`); the `mix genswarms ...` form is equivalent.
+
 ### Starting a daemon
 
-`genswarms start <config>` (mix task `Mix.Tasks.Genswarms.Start`) does not run the swarm in its own process. It:
+`genswarms start <config>` (escript) — equivalently `mix genswarms start <config>` — is implemented by `Mix.Tasks.Genswarms.Start`. It does not run the swarm in its own process. It:
 
-1. Initializes the SQLite registry (`SwarmRegistry.init/0`).
-2. Spawns a detached background process via `nohup mix genswarms.start.daemon "<config>" > .genswarms/logs/<swarm>.log 2>&1 & echo $!`, capturing the child PID.
-3. Waits briefly and confirms the daemon is alive.
+1. Verifies the config file exists and initializes the SQLite registry (`SwarmRegistry.init/0`).
+2. Spawns a detached background process via `Port.open/2` running `sh -c 'nohup mix genswarms.start.daemon "<config>" > .genswarms/logs/<swarm>.log 2>&1 & echo $!'`, capturing the child PID from stdout.
+3. Waits ~2 s and confirms the daemon is still alive (`SwarmRegistry.process_alive?/1`) before reporting success.
 
-The inner `mix genswarms.start.daemon` task (`Mix.Tasks.Genswarms.Start.Daemon`) is the actual long-running process: it starts the `:genswarms` application, starts the swarm, registers itself in SQLite, then enters a poll loop. (Use `genswarms start <config> --foreground` to run in the current process instead.)
+The inner `mix genswarms.start.daemon` task (`Mix.Tasks.Genswarms.Start.Daemon`) is the actual long-running process: it loads `.env`, initializes SQLite, starts the `:genswarms` application, starts the swarm, registers itself in SQLite, then enters a poll loop. (Use `genswarms start <config> --foreground` — alias `-f` — to run in the current process instead of daemonizing.)
 
 ### Coordination via SQLite
 
@@ -113,35 +124,35 @@ API node / CLI                         Daemon process (genswarms start)
                             .db ─────┘── log events
 ```
 
-Tables in `.genswarms/swarms.db`:
+Tables in `.genswarms/swarms.db` (created by `SwarmRegistry.init/0`):
 
 | Table | Purpose |
 |-------|---------|
-| `swarms` | Daemon swarm state: `name`, `status` (running/stopped/crashed), `pid`, `config_path`, `log_path`, `started_at`, `stopped_at` |
-| `events` | Centralized event log (`timestamp`, `level`, `category`, `swarm`, `agent`, `event_type`, `message`, `metadata`), indexed by swarm and timestamp |
-| `tasks` | Cross-process task queue (`swarm`, `agent`, `task`, `status`, timestamps) |
-| `swarm_overlays` | Dynamic-mutation event log for runtime swarm changes |
-| `swarm_commands` | CLI → daemon command bridge (add/remove agents, topology edges, scaling, etc.) |
+| `swarms` | Daemon swarm state: `name` (primary key), `status` (`running`/`stopped`/`crashed`), `pid`, `config_path`, `log_path`, `started_at`, `stopped_at` |
+| `events` | Centralized event log (`id`, `timestamp`, `level`, `category`, `swarm`, `agent`, `event_type`, `message`, `metadata`), indexed by `swarm` and `timestamp` |
+| `tasks` | Cross-process task queue (`swarm`, `agent`, `task`, `status`, `created_at`, `processed_at`), with a partial index on pending rows |
+| `swarm_overlays` | Dynamic-mutation event log for runtime swarm changes, keyed by `(swarm, seq)` |
+| `swarm_commands` | CLI → daemon command bridge (add/remove agents/objects, topology edges, scaling, fetch config, etc.) |
 
-The database runs in WAL mode with a 5s busy timeout for concurrent readers/writers.
+The database runs in WAL mode (`PRAGMA journal_mode=WAL`) with a 5 s busy timeout (`PRAGMA busy_timeout=5000`) for concurrent readers/writers. Each operation opens a fresh connection and closes it when done; `log_events_bulk/1` wraps a batch in a single `BEGIN`/`COMMIT` transaction.
 
 ### Poll loop
 
-The daemon's `daemon_loop/2` waits for the supervisor to go `:DOWN` (marking the swarm `crashed`); otherwise, every 500 ms it:
+The daemon's `daemon_loop/2` monitors `Genswarms.Supervisor`; if it goes `:DOWN`, the swarm is marked `crashed`. Otherwise, every 500 ms (the `@task_poll_interval`) it:
 
-1. `process_pending_tasks/1` — drains `SwarmRegistry.get_pending_tasks/1` and delivers each via `SwarmManager.send_task/3`, marking processed or leaving pending for retry on failure.
-2. `process_pending_commands/1` — applies queued mutation commands (add/remove agent or object, add/remove topology edges, scale agent group, fetch full config) and writes results back.
+1. `process_pending_tasks/1` — drains `SwarmRegistry.get_pending_tasks/1` and delivers each via `SwarmManager.send_task/3`, marking processed on success or leaving the task pending for retry (and logging) on failure.
+2. `process_pending_commands/1` — applies queued mutation commands (add/remove agent or object, add/remove topology edges, scale an agent group, fetch full config) and writes results back via `SwarmRegistry.mark_command_done/2`.
 
 ### Task delivery paths
 
 `genswarms task <swarm> <agent> <msg>` chooses a path based on whether the API server is up:
 
-- API server running → send over HTTP REST.
-- No API server → enqueue in the `tasks` table; the daemon's poll loop picks it up within ~500 ms.
+- API server running → send over HTTP REST (`APIClient.send_task/3`).
+- No API server → enqueue in the `tasks` table (`SwarmRegistry.queue_task/3`); the daemon's poll loop picks it up within ~500 ms.
 
 ### Stop, pause, resume
 
-- `genswarms stop <swarm>` sends `SIGTERM` to the recorded daemon PID, waits for exit, and marks the swarm stopped.
+- `genswarms stop <swarm>` sends `SIGTERM` (`kill -TERM <pid>`) to the recorded daemon PID, waits for exit, and marks the swarm stopped.
 - Pause/resume for daemon swarms cannot use in-BEAM GenServer calls (the daemon is a separate process), so they act on the containers directly, e.g. `docker pause szc-<swarm>-<agent>` / `docker unpause …`.
 
 ## Deployment models
@@ -159,11 +170,11 @@ Run many isolated agents on one machine using minimal NixOS containers that incl
 
 ### Bare metal (Colmena + NixOS)
 
-Deploy fully configured NixOS machines with Colmena, then start the orchestrator, which connects to them over SSH:
+Deploy fully configured NixOS machines with Colmena, then start the orchestrator, which connects to them over SSH. Point `start` at your own SSH-backed swarm config (one whose agents use `backend: {:ssh, "user@host"}`):
 
 ```bash
 colmena apply
-mix genswarms start examples/bare_metal_swarm.exs
+genswarms start path/to/bare_metal_swarm.exs
 ```
 
 ### Hybrid

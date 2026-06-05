@@ -31,7 +31,14 @@ Task completed successfully.
 <<SWARM_MSG:END>>
 ```
 
-A target name must match `[a-zA-Z_][a-zA-Z0-9_]*`. The newline after `:START>>` is optional. `LogWatcher` polls each agent's log files every 500 ms, extracts these blocks, and forwards them to the Router as `:send` or `:broadcast` messages.
+A target name must match `[a-zA-Z_][a-zA-Z0-9_]*`. Content is trimmed of surrounding whitespace before routing.
+
+Two code paths recognize these markers:
+
+- **`AgentProtocol.parse_output/1`** scans an agent's stdout when a turn completes. Its send pattern requires a newline immediately after `:START>>`.
+- **`LogWatcher`** polls each agent's `*.txt` log files (the `RES:` entries written by the backend) every **500 ms**, extracts the same blocks, and forwards them to the Router. Here the newline after `:START>>` is optional.
+
+Both paths emit `:send` messages (for `TO=<name>`) or `:broadcast` messages (for `BROADCAST`) to the Router.
 
 ## How topology gates routing
 
@@ -46,16 +53,18 @@ topology: [
 
 When a message is routed, the Router checks whether the target is in the source's adjacency list:
 
-- If allowed, the message is delivered to the target (agent or object), logged, and emitted as a `:message_routed` telemetry event and PubSub broadcast.
+- If allowed, the message is delivered to the target (agent or object), logged, and emitted as a `:message_routed` telemetry event and PubSub broadcast (on `swarm:<name>:routing`).
 - If not allowed, the message is dropped, a warning is logged, and an `:invalid_route` telemetry event is emitted listing the allowed targets.
 
 A broadcast (`@all:`) is delivered to every target in the source's adjacency list. An agent with no outgoing edges can broadcast, but the message reaches no one.
 
 Edges are directed. `{:researcher, :coder}` lets `researcher` message `coder`, but not the reverse — add `{:coder, :researcher}` for a reply path.
 
+> If the target resolves to neither a registered agent nor object in the swarm (for example, a typo'd name that *is* topology-allowed), the route passes the topology check but delivery fails: the Router logs a `:target_not_found` warning instead.
+
 ## System object routing
 
-Three targets are always routable regardless of topology edges, defined as `@system_objects` in the Router:
+Three targets are always routable regardless of topology edges, defined as `@system_objects` in the Router (`[:metrics, :tick, :gateway]`):
 
 | Target | Purpose |
 |--------|---------|
@@ -63,7 +72,7 @@ Three targets are always routable regardless of topology edges, defined as `@sys
 | `:tick` | Clock / heartbeat coordination |
 | `:gateway` | External ingress/egress |
 
-Any agent or object may send to `:metrics`, `:tick`, or `:gateway` without an explicit topology edge. This lets objects emit state reports, heartbeats, and similar signals without wiring them into every node of the graph. See [objects.md](objects.md) for handlers that typically consume these.
+Any agent or object may send to `:metrics`, `:tick`, or `:gateway` without an explicit topology edge. This lets objects emit state reports, heartbeats, and similar signals without wiring them into every node of the graph. (A handler still has to be registered for the target to actually receive the message — see the `:target_not_found` note above.) See [objects.md](objects.md) for handlers that typically consume these.
 
 ## File-based messaging
 
@@ -71,17 +80,17 @@ Sandboxed (bwrap) agents cannot always rely on stdin/stdout. For them, two file-
 
 ### File-inbox (inbound)
 
-Every message delivered to an agent is also written to `{workspace}/.inbox/{seq}_{from}.json`, giving sandboxed agents a reliable place to read incoming messages. The sequence number is zero-padded to four digits (for example `0001_researcher.json`).
+Every message delivered to an agent is also written to `{workspace}/.inbox/{seq}_{from}.json`, giving sandboxed agents a reliable place to read incoming messages. The `seq` is a per-agent counter incremented on each delivery and zero-padded to four digits (for example `0001_researcher.json`).
 
 ```json
 {"from": "researcher", "content": "Please implement the algorithm.", "seq": 1, "timestamp": "2024-01-01T00:00:00Z"}
 ```
 
-The file-inbox is a delivery convenience; it is written in addition to the agent's normal in-process delivery, not instead of it.
+`timestamp` is an ISO-8601 UTC string. The file-inbox is a delivery convenience: it is written in addition to the agent's normal in-process inbox queue, not instead of it. (Writing only happens when the agent has a non-empty `workspace` configured; local/port agents without a workspace skip it.)
 
 ### File-outbox (outbound)
 
-Instead of emitting `@agent:` syntax, an agent can drop a JSON file into `{workspace}/.outbox/`. `LogWatcher` polls the outbox every 500 ms, processes files in sorted order, routes each one through the Router, and deletes it afterward.
+Instead of emitting `@agent:` syntax, an agent can drop a JSON file into `{workspace}/.outbox/`. `LogWatcher` polls the outbox every 500 ms, processes `*.json` files in sorted (lexical) filename order, routes each one through the Router, and deletes it afterward.
 
 A directed send:
 
@@ -95,20 +104,21 @@ A broadcast:
 {"broadcast": true, "content": "task completed"}
 ```
 
-Files that match neither shape are logged as invalid and removed.
+Files that match neither shape are logged as invalid and removed. Because files are processed in lexical order, zero-padded sequence prefixes (e.g. `0001_`, `0002_`) preserve send order — this is exactly what `swarm-msg` writes for you.
 
 ## The `swarm-msg` helper
 
-`swarm-msg` is the agent-side messaging CLI available inside agent sandboxes. It writes outbox files for you, so skills can call it instead of formatting JSON by hand. (The name `swarm-msg` is intentional — it belongs to the agent side and is not renamed.)
+`swarm-msg` is the agent-side messaging CLI available inside agent sandboxes (the script ships at the repo root and is mounted into the sandbox). It writes outbox files for you, so skills can call it instead of formatting JSON by hand. (The name `swarm-msg` is intentional — it belongs to the agent side and is not renamed.)
 
 | Command | Description |
 |---------|-------------|
 | `swarm-msg send <agent> <message>` | Send a message to an agent via the outbox |
-| `swarm-msg send <agent> -f <file>` | Send a file's contents to an agent |
-| `swarm-msg broadcast <message>` | Broadcast to all connected agents |
-| `swarm-msg list` | List agents you can message (from topology) |
+| `swarm-msg send <agent> -f <file>` | Send a file's contents to an agent (combined with `<message>` if both given) |
+| `swarm-msg broadcast <message>` | Broadcast to all connected agents via the outbox |
+| `swarm-msg list` | List agents you can message (from the `SWARM_TOPOLOGY` env var) |
 | `swarm-msg send-stdout <agent> <msg>` | Legacy: send via the stdout `SWARM_MSG` protocol |
-| `swarm-msg help` | Show usage |
+| `swarm-msg broadcast-stdout <msg>` | Legacy: broadcast via the stdout `SWARM_MSG` protocol |
+| `swarm-msg help` | Show usage (also `--help`, `-h`, or no args) |
 
 Examples:
 
@@ -126,11 +136,13 @@ swarm-msg broadcast "Phase complete, ready for next"
 swarm-msg send reviewer -f /workspace/fix.patch
 ```
 
-`send` and `broadcast` write zero-padded JSON files (for example `0001_coder.json`) into `/workspace/.outbox/`, which the router picks up automatically. The legacy `send-stdout` and `broadcast-stdout` subcommands instead print `SWARM_MSG` markers to stdout for log-based routing.
+`send` and `broadcast` write zero-padded JSON files into `/workspace/.outbox/`, which the router picks up automatically. The sequence number is derived from the count of existing `*.json` files already in the outbox, so a directed send becomes e.g. `0001_coder.json` and a broadcast becomes `0001_broadcast.json`. The legacy `send-stdout` and `broadcast-stdout` subcommands instead print `SWARM_MSG` markers to stdout for log-based routing.
+
+> `swarm-msg` JSON-encodes message bodies with `jq` (for `send`) or `python3` (for `broadcast`), falling back to a `sed`/`awk` escaper when those tools are absent — so the preset's available tools affect encoding fidelity for unusual payloads.
 
 ### `SWARM_TOPOLOGY` for `swarm-msg list`
 
-Inside a container, `swarm-msg list` reads the `SWARM_TOPOLOGY` environment variable — a comma-separated list of the targets the agent is connected to — and prints them. If `SWARM_TOPOLOGY` is unset, it reports that the topology is not available.
+Inside a container, `swarm-msg list` reads the `SWARM_TOPOLOGY` environment variable — a comma-separated list of the targets the agent is connected to — and prints them. If `SWARM_TOPOLOGY` is unset, it reports `Topology not available.`
 
 ```bash
 $ swarm-msg list

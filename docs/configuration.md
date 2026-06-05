@@ -12,7 +12,7 @@ A configuration is a map with the following keys.
 | `agents` | list of maps | Yes | One or more agent definitions. Must be non-empty. |
 | `objects` | list of maps | No | Non-agentic Elixir/backend components. Defaults to `[]`. |
 | `topology` | list of `{from, to}` tuples | No | Directed communication edges. Defaults to `[]`. |
-| `skills_base_dir` | string | No | Base directory to resolve skill files from. |
+| `skills_base_dir` | string | No | Base directory to resolve skill files from. Stored on the parsed struct; not otherwise validated. |
 | `options` | map | No | Free-form additional settings. Defaults to `%{}`. |
 
 ```elixir
@@ -37,12 +37,12 @@ Each entry in `agents` is a map. Only the keys below are recognized by the valid
 | Key | Type | Required | Default | Description |
 |-----|------|----------|---------|-------------|
 | `name` | atom or string | Yes | — | Unique agent identifier. Strings are normalized to atoms. |
-| `backend` | backend spec | No | `:bwrap` | Where/how the agent runs (see [Backend value forms](#backend-value-forms)). If omitted, defaults to `:bwrap`. |
-| `model` | string | No | — | LLM model in OpenRouter format (`provider/model-name`). Falls back to `SUBZEROCLAW_MODEL` then `anthropic/claude-sonnet-4`. |
-| `endpoint` | string | No | — | API endpoint URL. Auto-detected from the API key if omitted. |
+| `backend` | backend spec | No | `:bwrap` | Where/how the agent runs (see [Backend value forms](#backend-value-forms)). If omitted, the parser fills in `:bwrap`. |
+| `model` | string | No | — | LLM model in OpenRouter format (`provider/model-name`). When unset, the backend passes through `SUBZEROCLAW_MODEL`; `subzeroclaw` itself falls back to `anthropic/claude-sonnet-4`. |
+| `endpoint` | string | No | — | API endpoint URL. When unset, the backend passes through `SUBZEROCLAW_ENDPOINT`; otherwise `subzeroclaw` auto-detects from the API key. |
 | `skills` | list of strings | No | `[]` | Skill markdown filenames to deploy. All entries must be strings. |
 | `presets` | list of atoms | No | `[]` | NixOS tool presets. Must be drawn from the valid preset set below. |
-| `tools` | list of atoms | No | `[]` | Individual tools. Must be drawn from the valid tool set. |
+| `tools` | list of atoms | No | `[]` | Individual tools. Must be drawn from the valid tool set below. |
 | `config` | map | No | `%{}` | Backend-specific and domain-specific configuration (see [Bwrap config separation](#bwrap-config-separation)). |
 
 ```elixir
@@ -58,17 +58,19 @@ Each entry in `agents` is a map. Only the keys below are recognized by the valid
 
 ### Valid presets
 
-Presets are validated against this set (defined in `nix/tool-presets.nix`):
+Presets are validated against the `@valid_presets` set in `Genswarms.Config.SwarmConfig` (the corresponding NixOS package sets live in `nix/tool-presets.nix`):
 
 `:base`, `:web`, `:code`, `:python`, `:node`, `:data`, `:docs`, `:network`, `:system`, `:security`, `:containers`, `:cloud`, `:ai`
 
+A `presets` value that is not a list of atoms fails with `:invalid_presets_format`.
+
 ### Valid tools
 
-Individual tools are validated against a fixed list, including:
+Individual tools are validated against the complete `@valid_tools` set in `Genswarms.Config.SwarmConfig`:
 
 `:git`, `:curl`, `:wget`, `:jq`, `:yq`, `:tree`, `:htop`, `:ripgrep`, `:rg`, `:fd`, `:fzf`, `:ag`, `:vim`, `:neovim`, `:nano`, `:python`, `:python3`, `:node`, `:nodejs`, `:ruby`, `:go`, `:rustc`, `:cargo`, `:make`, `:cmake`, `:gcc`, `:clang`, `:sqlite`, `:postgresql`, `:mysql`, `:redis`, `:duckdb`, `:pandoc`, `:pdftotext`, `:ssh`, `:rsync`, `:netcat`, `:httpie`, `:docker`, `:podman`, `:kubectl`, `:gh`, `:glab`, `:miller`, `:csvkit`, `:xsv`, `:ffmpeg`, `:imagemagick`, `:pytest`, `:ruff`, `:mypy`, `:black`, `:flake8`, `:pip`, `:poetry`, `:uv`.
 
-Unknown presets or tools fail validation with `{:unknown_presets, ...}` or `{:unknown_tools, ...}`.
+A `tools` value that is not a list of atoms fails with `:invalid_tools_format`. Atoms outside the set above fail with `{:unknown_tools, invalid}` (where `invalid` is the list of offending atoms); likewise unknown presets fail with `{:unknown_presets, invalid}`.
 
 ## Backend value forms
 
@@ -86,20 +88,22 @@ The `backend` key accepts any of the following forms. See [backends.md](backends
 | `:mock` | Mock | No process; a stub for testing. |
 | `{:mock, %{script: [...]}}` | Mock | `script` is stored for test introspection only — the backend does not generate responses (see [backends.md](backends.md)). |
 
-> JSON/YAML limitation: the loader only converts a **scalar string** backend to an atom (`"local"`, `"bwrap"`, `"mock"`). It does **not** turn an array like `["docker", "coder"]` into a `{:docker, "coder"}` tuple, and array backends fail validation. So tuple-form backends (Docker/SSH, or any form with an options map) can only be expressed in `.exs` configs. JSON/YAML configs are limited to the scalar string backends.
+Any other value fails validation with `{:invalid_backend, backend}`.
+
+> JSON/YAML limitation: the loader only converts a **scalar string** backend to an atom (`"local"` → `:local`, `"bwrap"` → `:bwrap`, `"mock"` → `:mock`, etc.). It does **not** turn an array like `["docker", "coder"]` into a `{:docker, "coder"}` tuple, so array-form backends reach the validator unchanged and fail. Tuple-form backends (Docker/SSH, or any form with an options map) can therefore only be expressed in `.exs` configs. JSON/YAML configs are limited to the scalar string backends.
 
 ## Bwrap config separation
 
-For bwrap agents, the agent's `config` map is split at deploy time into backend keys and domain keys. Backend keys control the execution environment and are consumed by `BwrapBackend`; all remaining keys are treated as domain config available to the agent's skills and logic.
+For bwrap agents, the agent's `config` map is split at deploy time (in `Genswarms.Agents.AgentServer`) into backend keys and domain keys. Backend keys override the values returned by `SwarmConfig.backend_config/1` and control the execution environment; all remaining keys stay as domain config available to the agent's skills and logic.
 
 The backend keys are:
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `workspace` | string | — | Working directory mounted read-write into the sandbox. |
+| `workspace` | string | `/tmp/szc-workspace/<sandbox_id>` | Working directory mounted read-write into the sandbox. |
 | `extra_path` | list of strings | `[]` | Additional directories prepended to `PATH`. |
 | `extra_ro_binds` | list of `{host, container}` | `[]` | Extra read-only bind mounts. |
-| `extra_rw_binds` | list of `{host, container}` | `[]` | Accepted and split out of `config`, but **not currently applied** by the backend (only `extra_ro_binds` is mounted). Use `workspace` for writable space. |
+| `extra_rw_binds` | list of `{host, container}` | `[]` | Split out of `config`, but **not currently applied** by the backend (only `extra_ro_binds` is mounted). Use `workspace` for writable space. |
 | `extra_env` | map | `%{}` | Extra environment variables passed into the sandbox. |
 | `memory_limit` | string | `"256M"` | Memory ceiling (e.g. `"512M"`). |
 | `cpu_shares` | integer | `100` | Relative CPU weight. |
@@ -137,7 +141,7 @@ Objects are non-agentic components that participate in topology but run determin
 | `backend` | backend spec | For Docker/SSH objects | Same forms as agent backends. |
 | `config` | map | No | Passed to the handler's `init/1` (or to the backend). |
 
-If a `handler` module is already loaded, the validator checks it exports `init/1` and `handle_message/3`; if the module is not yet loaded (it may live in the host application), validation is deferred.
+If a `handler` module is already loaded, the validator checks it exports `init/1` and `handle_message/3` (raising `{:invalid_handler, handler, ...}` otherwise); if the module is not yet loaded (it may live in the host application), validation is deferred. An object map with neither `handler` nor `backend` fails with `:invalid_object_config`.
 
 ```elixir
 objects: [
@@ -151,7 +155,7 @@ objects: [
 
 ## Topology
 
-`topology` is a list of directed edges, each a `{from, to}` tuple. Every endpoint must be the name of a defined agent or object; edges that reference an unknown name fail validation with `{:unknown_agent, name}`. Both endpoints may be atoms or strings (strings are normalized to atoms).
+`topology` is a list of directed edges, each a `{from, to}` tuple. Every endpoint must be the name of a defined agent or object. Both endpoints may be atoms or strings (strings are normalized to atoms).
 
 ```elixir
 topology: [
@@ -162,17 +166,19 @@ topology: [
 
 An edge `{a, b}` permits messages from `a` to `b`. For two-way communication, declare both directions explicitly. The topology may be empty.
 
+Validation collects all edge errors and returns them wrapped as `{:invalid_topology, errors}`. Each entry is either `{:unknown_agent, name}` (an endpoint that is not a defined agent or object) or `{:invalid_edge_format, idx, edge}` (an edge that is not a `{from, to}` tuple of atoms/strings).
+
 ### System objects
 
 The router always permits messages to the system objects `:metrics`, `:tick`, and `:gateway`, even without an explicit topology edge (`@system_objects` in `lib/genswarms/routing/router.ex`). You do not need to declare edges to these targets. See [messaging.md](messaging.md) for routing details.
 
 ## Config formats
 
-The file extension determines the parser: `.exs` (Elixir term), `.json`, or `.yaml`/`.yml`. All formats produce the same validated structure. String keys are atomized and string backend values are converted to atoms during loading.
+The file extension determines the parser: `.exs` (Elixir term), `.json`, or `.yaml`/`.yml`. All formats produce the same validated structure. String keys are atomized and scalar string backend values are converted to atoms during loading.
 
 ### Elixir (.exs)
 
-The file must evaluate to a configuration map. This is the only format that supports Elixir-native values such as module atoms for object handlers and dynamic expressions.
+The file must evaluate to a configuration map. This is the only format that supports Elixir-native values such as module atoms for object handlers, tuple-form backends, and dynamic expressions.
 
 ```elixir
 %{
@@ -230,7 +236,7 @@ topology:
 
 ## Per-agent models
 
-Each agent can run on a different model and endpoint. When omitted, the model resolves to `SUBZEROCLAW_MODEL` and then the default `anthropic/claude-sonnet-4`; the endpoint is auto-detected from the API key. Models use OpenRouter format (`provider/model-name`); see [openrouter.ai/models](https://openrouter.ai/models) for the full list.
+Each agent can run on a different model and endpoint. When omitted, the backend passes through `SUBZEROCLAW_MODEL`, and `subzeroclaw` itself falls back to `anthropic/claude-sonnet-4`; the endpoint is auto-detected from the API key. Models use OpenRouter format (`provider/model-name`); see [openrouter.ai/models](https://openrouter.ai/models) for the full list.
 
 ```elixir
 agents: [

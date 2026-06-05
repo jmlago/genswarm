@@ -50,8 +50,9 @@ For the real OTP supervision tree and the per-swarm process layout, see
 
 ## Installation
 
-Requires Elixir 1.17+ and Erlang 27+ (the Nix dev shell pins Elixir 1.17 /
-Erlang 27 / Node 20).
+Genswarms requires **Elixir 1.14+** and **Erlang/OTP 27+** (`mix.exs` pins
+`elixir: "~> 1.14"`). The Nix dev shell pins the exact versions used in CI —
+Elixir 1.17 / Erlang 27 / Node 20 — so it is the recommended setup.
 
 ```bash
 # With Nix (recommended): enter the dev shell
@@ -66,6 +67,8 @@ mix escript.build
 # Optionally install it on your PATH
 cp genswarms ~/.local/bin/        # or: sudo cp genswarms /usr/local/bin/
 ```
+
+Node.js 20 is only needed if you build agent container images.
 
 See [docs/getting-started.md](docs/getting-started.md) for the full setup,
 container builds, and environment variables.
@@ -101,17 +104,21 @@ genswarms stop example-swarm
 genswarms down
 ```
 
-Every subcommand is also available as a mix task, e.g. `mix genswarms.status`.
+Every subcommand is also available as a Mix task, e.g. `mix genswarms.status`.
+A few lifecycle commands are **Mix-task only** today — see the note under
+[CLI overview](#cli-overview).
 
 ## CLI overview
 
+These commands are wired into the `genswarms` escript binary:
+
 | Command | Description |
 |---------|-------------|
-| `genswarms up` / `down` | Start / stop the API server (and all swarms) |
+| `genswarms up` / `down` | Start / stop the API server (`up` is an alias for `dashboard start`; `down` stops the server and all swarms) |
+| `genswarms dashboard [start\|stop\|status]` | Manage the API/dashboard server explicitly |
 | `genswarms init [dir]` | Scaffold a new project |
-| `genswarms start <config>` | Start a swarm as a daemon |
-| `genswarms stop` / `restart` / `delete <name>` | Swarm lifecycle |
-| `genswarms pause` / `resume <name>` | Freeze / unfreeze containers |
+| `genswarms start <config>` | Start a swarm as a daemon (`--foreground` to run inline) |
+| `genswarms stop <name>` / `restart <name>` | Swarm lifecycle (`restart --delete` for a clean slate) |
 | `genswarms status [name]` | Show server and swarm status |
 | `genswarms task <swarm> <agent> <msg>` | Send a task to an agent |
 | `genswarms msg <swarm> <from> <to> <msg>` | Route a message between agents |
@@ -119,8 +126,25 @@ Every subcommand is also available as a mix task, e.g. `mix genswarms.status`.
 | `genswarms events` | Query and stream events |
 | `genswarms scale <swarm> <base> <n>` | Scale an agent group |
 | `genswarms snapshot` / `overlay` | Snapshots and bwrap overlays |
-| `genswarms config validate <file>` | Validate a config |
+| `genswarms build [--all]` | Build agent container images via nix |
+| `genswarms env [list\|get\|set]` | Manage environment variables |
+| `genswarms config validate <file>` / `check <file>` | Validate a config |
 | `genswarms list-skills` | List available skills |
+
+**Mix-task only commands.** The following are *not* dispatched by the `genswarms`
+escript — running `genswarms pause …` falls through to "Unknown command". Invoke
+them through Mix instead:
+
+| Command | Description |
+|---------|-------------|
+| `mix genswarms.pause <name>` / `mix genswarms.resume <name>` | Freeze / unfreeze the swarm's Docker containers |
+| `mix genswarms.delete <name>` | Delete a swarm and all its data (`--force` to skip the prompt) |
+| `mix genswarms.clean` | Remove stopped/crashed swarms (`--all` also clears events) |
+| `mix genswarms.restart_agent <swarm> <agent>` | Restart a single agent (requires the API server) |
+
+Many additional runtime operations (restart a single agent, pause/resume,
+add/remove agents, edit skills, fetch topology) are exposed through the
+[REST API](docs/rest-api.md) rather than the CLI.
 
 See the [full CLI reference](docs/cli.md) for every command, flag, and example.
 
