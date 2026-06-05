@@ -29,6 +29,11 @@ defmodule Genswarms.Backends.LocalBackend do
     wrapper_path = get_wrapper_path(config)
     subzeroclaw_path = get_subzeroclaw_path(config)
     skills_dir = Map.get(config, :skills_dir)
+    workspace = Map.get(config, :workspace)
+
+    # Each local agent gets its own workspace dir (used as cwd + WORKSPACE) so
+    # swarm-msg's outbox and the LogWatcher poll the SAME per-agent .outbox.
+    if workspace && workspace != "", do: File.mkdir_p!(Path.expand(workspace))
 
     env =
       [
@@ -37,16 +42,19 @@ defmodule Genswarms.Backends.LocalBackend do
         maybe_add_skills_env(skills_dir) ++
         maybe_add_api_key_env(config) ++
         maybe_add_model_env(config) ++
-        maybe_add_endpoint_env(config)
+        maybe_add_endpoint_env(config) ++
+        maybe_add_workspace_env(workspace) ++
+        extra_env(config)
 
-    port_opts = [
-      :binary,
-      :exit_status,
-      {:line, 16_384},
-      {:env, env},
-      :use_stdio,
-      :stderr_to_stdout
-    ]
+    port_opts =
+      [
+        :binary,
+        :exit_status,
+        {:line, 16_384},
+        {:env, env},
+        :use_stdio,
+        :stderr_to_stdout
+      ] ++ maybe_cd(workspace)
 
     cmd = build_command(wrapper_path, subzeroclaw_path, name, skills_dir)
 
@@ -168,6 +176,27 @@ defmodule Genswarms.Backends.LocalBackend do
       endpoint -> [{~c"SUBZEROCLAW_ENDPOINT", String.to_charlist(endpoint)}]
     end
   end
+
+  # WORKSPACE lets swarm-msg (and the skill) resolve a per-agent .outbox instead
+  # of the bwrap-only hardcoded /workspace.
+  defp maybe_add_workspace_env(nil), do: []
+  defp maybe_add_workspace_env(""), do: []
+
+  defp maybe_add_workspace_env(workspace) do
+    [{~c"WORKSPACE", String.to_charlist(Path.expand(workspace))}]
+  end
+
+  # Arbitrary per-agent env (e.g. WINGSTON_CONVERSATION_ID) passed via the
+  # {:local, %{extra_env: %{...}}} backend opts.
+  defp extra_env(config) do
+    config
+    |> Map.get(:extra_env, %{})
+    |> Enum.map(fn {k, v} -> {String.to_charlist(to_string(k)), String.to_charlist(to_string(v))} end)
+  end
+
+  defp maybe_cd(nil), do: []
+  defp maybe_cd(""), do: []
+  defp maybe_cd(workspace), do: [{:cd, String.to_charlist(Path.expand(workspace))}]
 
   defp parse_json_lines(data) do
     lines = String.split(data, "\n")

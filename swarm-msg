@@ -101,7 +101,7 @@ $(cat "$file")"
     fi
 
     # Write to outbox
-    outbox_dir="/workspace/.outbox"
+    outbox_dir="${WORKSPACE:-/workspace}/.outbox"
     mkdir -p "$outbox_dir"
     seq=$(ls "$outbox_dir"/*.json 2>/dev/null | wc -l)
     seq=$((seq + 1))
@@ -124,7 +124,7 @@ broadcast_message() {
         exit 1
     fi
 
-    outbox_dir="/workspace/.outbox"
+    outbox_dir="${WORKSPACE:-/workspace}/.outbox"
     mkdir -p "$outbox_dir"
     seq=$(ls "$outbox_dir"/*.json 2>/dev/null | wc -l)
     seq=$((seq + 1))

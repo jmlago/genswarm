@@ -108,5 +108,27 @@ defmodule Genswarms.Objects.ObjectHandler do
   """
   @callback terminate(reason :: term(), state :: term()) :: :ok
 
-  @optional_callbacks [terminate: 2, handle_info: 2]
+  @doc """
+  Optional read-only snapshot for the observability dashboard.
+
+  Receives the object's live `handler_state`. MUST be cheap and side-effect-free.
+  Returns a list of tagged contributions:
+
+    - `%{kind: :sessions, items: [session_map], optional :pool => map()}`
+    - `%{kind: :extension, name: String.t(), data: map()}`
+
+  Bodies (transcripts/logs) MUST NOT be returned here — fetch them lazily via
+  `session_history/3`. The aggregate validates and timeboxes this call.
+  """
+  @callback dashboard(state :: term()) :: [map()]
+
+  @doc """
+  Optional durable transcript for one session. Bodies are fetched lazily here,
+  never in `dashboard/1`. Returns `{:ok, [%{role, content}]}` when the object owns a
+  durable, session-keyed transcript, or `:not_available` to let the caller fall back.
+  """
+  @callback session_history(state :: term(), session_id :: String.t(), opts :: map()) ::
+              {:ok, [map()]} | :not_available
+
+  @optional_callbacks [terminate: 2, handle_info: 2, dashboard: 1, session_history: 3]
 end

@@ -112,6 +112,20 @@ defmodule Genswarms.Objects.ObjectServer do
     GenServer.call(via_tuple(swarm_name, object_name), :get_interface)
   end
 
+  @doc "Read-only dashboard contribution for this object (or :no_dashboard)."
+  def get_dashboard(swarm_name, object_name, timeout \\ 2_000) do
+    GenServer.call(via_tuple(swarm_name, object_name), :get_dashboard, timeout)
+  end
+
+  @doc "Durable transcript for one session (or :not_available / :no_session_history)."
+  def get_session_history(swarm_name, object_name, session_id, opts, timeout \\ 2_000) do
+    GenServer.call(
+      via_tuple(swarm_name, object_name),
+      {:get_session_history, session_id, opts},
+      timeout
+    )
+  end
+
   @doc """
   Stops the object.
   """
@@ -437,6 +451,33 @@ defmodule Genswarms.Objects.ObjectServer do
     # Could potentially query the process for its interface
     {:reply, %{note: "Process-mode object - interface not available"}, state}
   end
+
+  def handle_call(:get_dashboard, _from, %{mode: :native} = state) do
+    result =
+      if state.handler && function_exported?(state.handler, :dashboard, 1) do
+        state.handler.dashboard(state.handler_state)
+      else
+        :no_dashboard
+      end
+
+    {:reply, result, state}
+  end
+
+  def handle_call(:get_dashboard, _from, state), do: {:reply, :no_dashboard, state}
+
+  def handle_call({:get_session_history, session_id, opts}, _from, %{mode: :native} = state) do
+    result =
+      if state.handler && function_exported?(state.handler, :session_history, 3) do
+        state.handler.session_history(state.handler_state, session_id, opts)
+      else
+        :no_session_history
+      end
+
+    {:reply, result, state}
+  end
+
+  def handle_call({:get_session_history, _sid, _opts}, _from, state),
+    do: {:reply, :no_session_history, state}
 
   # Catch-all handlers for AgentServer calls that might be made on objects
   def handle_call(:get_logs, _from, state) do

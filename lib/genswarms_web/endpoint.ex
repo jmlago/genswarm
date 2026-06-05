@@ -1,9 +1,11 @@
 defmodule GenswarmsWeb.Endpoint do
   use Phoenix.Endpoint, otp_app: :genswarms
 
-  # WebSocket for real-time swarm communication
+  # WebSocket for real-time swarm communication. `connect_info: [:x_headers]`
+  # exposes the upgrade request's `x-` headers to SwarmSocket.connect/3 so the
+  # read token can be passed via the `x-dashboard-token` header instead of the URL.
   socket "/swarm", GenswarmsWeb.SwarmSocket,
-    websocket: true,
+    websocket: [connect_info: [:x_headers]],
     longpoll: false
 
   # Code reloading in development

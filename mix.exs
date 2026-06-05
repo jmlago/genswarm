@@ -26,7 +26,10 @@ defmodule Genswarms.MixProject do
   def application do
     [
       mod: {Genswarms.Application, []},
-      extra_applications: [:logger, :runtime_tools, :ssh]
+      # :ssh dropped — the SSH backend is unused in the :local dev path and
+      # erlang-ssh isn't installed (apt split). Re-add it (+ `apt install
+      # erlang-ssh`) if you need the SSH backend.
+      extra_applications: [:logger, :runtime_tools]
     ]
   end
 
