@@ -1,4 +1,4 @@
-# NixOS module for SubzeroclawSwarm agent nodes
+# NixOS module for Genswarm agent nodes
 #
 # This module configures a NixOS machine to run as a swarm agent.
 # Deploy with Colmena to remote machines.
@@ -39,7 +39,7 @@ let
 
 in {
   options.swarm.agent = {
-    enable = mkEnableOption "SubzeroclawSwarm agent";
+    enable = mkEnableOption "Genswarm agent";
 
     name = mkOption {
       type = types.str;
@@ -160,7 +160,7 @@ in {
 
     # Optional: systemd service for persistent agent
     systemd.services.subzeroclaw-agent = mkIf (cfg.subzeroclawPackage != null) {
-      description = "SubzeroclawSwarm Agent - ${cfg.name}";
+      description = "Genswarm Agent - ${cfg.name}";
       wantedBy = [ "multi-user.target" ];
       after = [ "network.target" ];
 

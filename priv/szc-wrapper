@@ -1,5 +1,5 @@
 #!/usr/bin/env elixir
-# szc-wrapper - Protocol translator for SubzeroclawSwarm orchestrator
+# szc-wrapper - Protocol translator for Genswarm orchestrator
 #
 # This script wraps subzeroclaw and translates between:
 # - Orchestrator JSON protocol (stdin)

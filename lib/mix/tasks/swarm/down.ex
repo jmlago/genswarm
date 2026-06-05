@@ -22,7 +22,7 @@ defmodule Mix.Tasks.Swarm.Down do
 
   use Mix.Task
 
-  alias SubzeroclawSwarm.CLI.{Output, ServerManager}
+  alias Genswarm.CLI.{Output, ServerManager}
 
   @impl Mix.Task
   def run(args) do
@@ -73,9 +73,9 @@ defmodule Mix.Tasks.Swarm.Down do
 
   defp stop_swarms do
     # Need full app to interact with in-process swarms
-    case Application.ensure_all_started(:subzeroclaw_swarm) do
+    case Application.ensure_all_started(:genswarm) do
       {:ok, _} ->
-        swarms = SubzeroclawSwarm.list_swarms()
+        swarms = Genswarm.list_swarms()
 
         if Enum.empty?(swarms) do
           Output.dim("No swarms running")
@@ -84,7 +84,7 @@ defmodule Mix.Tasks.Swarm.Down do
           Output.info("Stopping #{length(swarms)} swarm(s)...")
 
           Enum.each(swarms, fn swarm ->
-            case SubzeroclawSwarm.stop_swarm(swarm.name) do
+            case Genswarm.stop_swarm(swarm.name) do
               :ok ->
                 Output.success("Stopped swarm: #{swarm.name}")
 

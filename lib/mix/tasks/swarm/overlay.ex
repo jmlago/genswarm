@@ -13,19 +13,19 @@ defmodule Mix.Tasks.Swarm.Overlay do
 
   use Mix.Task
 
-  alias SubzeroclawSwarm.CLI.{Output, SwarmRegistry}
+  alias Genswarm.CLI.{Output, SwarmRegistry}
 
   @shortdoc "Inspect or clear the swarm overlay"
 
   @impl Mix.Task
   def run([swarm_name, "--clear"]) do
-    Application.ensure_all_started(:subzeroclaw_swarm)
+    Application.ensure_all_started(:genswarm)
     :ok = SwarmRegistry.clear_overlay(swarm_name)
     Output.info("Overlay cleared for swarm '#{swarm_name}'")
   end
 
   def run([swarm_name]) do
-    Application.ensure_all_started(:subzeroclaw_swarm)
+    Application.ensure_all_started(:genswarm)
     events = SwarmRegistry.load_overlay(swarm_name)
 
     if events == [] do

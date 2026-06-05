@@ -2,12 +2,12 @@
 # swarm-check - Validate swarm configuration files
 #
 # This script wraps `mix swarm config validate` for standalone usage.
-# It requires the subzero-swarm project to be set up with deps.
+# It requires the genswarm project to be set up with deps.
 #
 # Usage:
 #   swarm-check <file.exs> [--quiet]
 #
-# In Docker, SWARM_HOME should point to the subzero-swarm project directory.
+# In Docker, SWARM_HOME should point to the genswarm project directory.
 
 set -e
 
@@ -15,7 +15,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SWARM_HOME="${SWARM_HOME:-$(dirname "$SCRIPT_DIR")}"
 
 if [ ! -f "$SWARM_HOME/mix.exs" ]; then
-    echo "Error: Cannot find subzero-swarm project at $SWARM_HOME" >&2
+    echo "Error: Cannot find genswarm project at $SWARM_HOME" >&2
     echo "Set SWARM_HOME environment variable to the project root" >&2
     exit 1
 fi

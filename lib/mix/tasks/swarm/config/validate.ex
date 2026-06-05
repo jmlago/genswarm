@@ -4,7 +4,7 @@ defmodule Mix.Tasks.Swarm.Config.Validate do
   @moduledoc """
   Validates swarm configuration files for correctness.
 
-  Uses the actual SubzeroclawSwarm.Config.Loader to parse and validate
+  Uses the actual Genswarm.Config.Loader to parse and validate
   configurations, ensuring they will work when the swarm is started.
 
   Checks:
@@ -36,8 +36,8 @@ defmodule Mix.Tasks.Swarm.Config.Validate do
 
   use Mix.Task
 
-  alias SubzeroclawSwarm.CLI.Output
-  alias SubzeroclawSwarm.Config.Loader
+  alias Genswarm.CLI.Output
+  alias Genswarm.Config.Loader
 
   @impl Mix.Task
   def run(args) do
@@ -149,7 +149,7 @@ defmodule Mix.Tasks.Swarm.Config.Validate do
   # Validate that all skill files exist
   defp validate_skills(config, path) do
     base_dir = Path.dirname(path)
-    skills_dir = Application.get_env(:subzeroclaw_swarm, :skills_dir, "priv/skills")
+    skills_dir = Application.get_env(:genswarm, :skills_dir, "priv/skills")
 
     Enum.flat_map(config.agents, fn agent ->
       skills = Map.get(agent, :skills, [])

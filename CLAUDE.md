@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-SubzeroclawSwarm is an Elixir/OTP orchestrator for managing swarms of AI agents with pluggable backends (Local/Docker/SSH/Bwrap/Mock), arbitrary directed graph topologies, per-agent skills with template variable resolution, file-based messaging (inbox/outbox), and fault tolerance via OTP supervision trees.
+Genswarm is an Elixir/OTP orchestrator for managing swarms of AI agents with pluggable backends (Local/Docker/SSH/Bwrap/Mock), arbitrary directed graph topologies, per-agent skills with template variable resolution, file-based messaging (inbox/outbox), and fault tolerance via OTP supervision trees.
 
 ## Build & Development Commands
 
@@ -32,7 +32,7 @@ mix credo
 mix phx.server
 
 # Run a single test file
-mix test test/subzeroclaw_swarm/routing/router_test.exs
+mix test test/genswarm/routing/router_test.exs
 
 # Run tests matching pattern
 mix test --only tag_name
@@ -159,24 +159,24 @@ API Server (Phoenix)                 Daemon Process (swarm start)
 
 | Module | Location | Purpose |
 |--------|----------|---------|
-| `SubzeroclawSwarm` | `lib/subzeroclaw_swarm.ex` | Main public API |
-| `SwarmManager` | `lib/subzeroclaw_swarm/swarm_manager.ex` | Swarm lifecycle orchestration |
-| `Router` | `lib/subzeroclaw_swarm/routing/router.ex` | Message routing via topology adjacency map |
-| `AgentServer` | `lib/subzeroclaw_swarm/agents/agent_server.ex` | Individual agent lifecycle |
-| `AgentProtocol` | `lib/subzeroclaw_swarm/agents/agent_protocol.ex` | Parses `@agent:` message syntax |
-| `LocalBackend` | `lib/subzeroclaw_swarm/backends/local_backend.ex` | Elixir Port subprocess |
-| `DockerBackend` | `lib/subzeroclaw_swarm/backends/docker_backend.ex` | Docker container management |
-| `SSHBackend` | `lib/subzeroclaw_swarm/backends/ssh_backend.ex` | SSH remote execution |
-| `ObjectHandler` | `lib/subzeroclaw_swarm/objects/object_handler.ex` | Behaviour for custom objects |
-| `ObjectServer` | `lib/subzeroclaw_swarm/objects/object_server.ex` | GenServer wrapper for object handlers (supports :send_many) |
-| `LogWatcher` | `lib/subzeroclaw_swarm/agents/log_watcher.ex` | Polls agent logs + .outbox/ for message routing |
-| `BwrapBackend` | `lib/subzeroclaw_swarm/backends/bwrap_backend.ex` | Bubblewrap sandbox backend |
-| `Loader` | `lib/subzeroclaw_swarm/config/loader.ex` | Loads .exs/.json/.yaml configs |
-| `CLI` | `lib/subzeroclaw_swarm/cli/cli.ex` | Main escript entry point |
-| `SwarmRegistry` | `lib/subzeroclaw_swarm/cli/swarm_registry.ex` | SQLite-backed cross-process state & task queue |
-| `LogStore` | `lib/subzeroclaw_swarm/observability/log_store.ex` | Centralized ETS-backed event logging |
-| `SwarmController` | `lib/subzeroclaw_swarm_web/controllers/swarm_controller.ex` | REST API for swarm management |
-| `SwarmChannel` | `lib/subzeroclaw_swarm_web/channels/swarm_channel.ex` | WebSocket for real-time events |
+| `Genswarm` | `lib/genswarm.ex` | Main public API |
+| `SwarmManager` | `lib/genswarm/swarm_manager.ex` | Swarm lifecycle orchestration |
+| `Router` | `lib/genswarm/routing/router.ex` | Message routing via topology adjacency map |
+| `AgentServer` | `lib/genswarm/agents/agent_server.ex` | Individual agent lifecycle |
+| `AgentProtocol` | `lib/genswarm/agents/agent_protocol.ex` | Parses `@agent:` message syntax |
+| `LocalBackend` | `lib/genswarm/backends/local_backend.ex` | Elixir Port subprocess |
+| `DockerBackend` | `lib/genswarm/backends/docker_backend.ex` | Docker container management |
+| `SSHBackend` | `lib/genswarm/backends/ssh_backend.ex` | SSH remote execution |
+| `ObjectHandler` | `lib/genswarm/objects/object_handler.ex` | Behaviour for custom objects |
+| `ObjectServer` | `lib/genswarm/objects/object_server.ex` | GenServer wrapper for object handlers (supports :send_many) |
+| `LogWatcher` | `lib/genswarm/agents/log_watcher.ex` | Polls agent logs + .outbox/ for message routing |
+| `BwrapBackend` | `lib/genswarm/backends/bwrap_backend.ex` | Bubblewrap sandbox backend |
+| `Loader` | `lib/genswarm/config/loader.ex` | Loads .exs/.json/.yaml configs |
+| `CLI` | `lib/genswarm/cli/cli.ex` | Main escript entry point |
+| `SwarmRegistry` | `lib/genswarm/cli/swarm_registry.ex` | SQLite-backed cross-process state & task queue |
+| `LogStore` | `lib/genswarm/observability/log_store.ex` | Centralized ETS-backed event logging |
+| `SwarmController` | `lib/genswarm_web/controllers/swarm_controller.ex` | REST API for swarm management |
+| `SwarmChannel` | `lib/genswarm_web/channels/swarm_channel.ex` | WebSocket for real-time events |
 
 ### Inter-Agent Communication
 
@@ -323,11 +323,11 @@ When `count: N` is used, workspace path is auto-appended with agent name:
 
 ## Test Files
 
-- `test/subzeroclaw_swarm/agents/agent_protocol_test.exs` - Message parsing
-- `test/subzeroclaw_swarm/routing/router_test.exs` - Message routing (including system object routing)
-- `test/subzeroclaw_swarm/config/loader_test.exs` - Config loading
-- `test/subzeroclaw_swarm/config/swarm_config_test.exs` - Config validation
-- `test/subzeroclaw_swarm/agents/inbox_test.exs` - Message queue
+- `test/genswarm/agents/agent_protocol_test.exs` - Message parsing
+- `test/genswarm/routing/router_test.exs` - Message routing (including system object routing)
+- `test/genswarm/config/loader_test.exs` - Config loading
+- `test/genswarm/config/swarm_config_test.exs` - Config validation
+- `test/genswarm/agents/inbox_test.exs` - Message queue
 - `lib/mix/tasks/swarm/test.ex` - E2E test task implementation
 
 ### Binary Path Resolution
@@ -350,7 +350,7 @@ Objects are Elixir modules implementing `ObjectHandler` behaviour. They particip
 
 ```elixir
 defmodule MyApp.Objects.MyHandler do
-  @behaviour SubzeroclawSwarm.Objects.ObjectHandler
+  @behaviour Genswarm.Objects.ObjectHandler
 
   @impl true
   def init(config), do: {:ok, %{}}

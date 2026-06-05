@@ -55,13 +55,13 @@ Objects are non-agentic components that participate in swarm topology. They exec
 
 ## Creating an Object Handler
 
-Objects are implemented as Elixir modules that implement the `SubzeroclawSwarm.Objects.ObjectHandler` behaviour.
+Objects are implemented as Elixir modules that implement the `Genswarm.Objects.ObjectHandler` behaviour.
 
 ### Required Callbacks
 
 ```elixir
 defmodule MyApp.Objects.MyHandler do
-  @behaviour SubzeroclawSwarm.Objects.ObjectHandler
+  @behaviour Genswarm.Objects.ObjectHandler
 
   @impl true
   def init(config) do
@@ -115,7 +115,7 @@ end
 
 ```elixir
 defmodule Phylogenesis.Objects.Evaluator do
-  @behaviour SubzeroclawSwarm.Objects.ObjectHandler
+  @behaviour Genswarm.Objects.ObjectHandler
   require Logger
 
   @impl true
@@ -449,7 +449,7 @@ Objects are automatically started when the swarm starts. To start manually:
 
 ```elixir
 # Start an object
-SubzeroclawSwarm.Objects.ObjectSupervisor.start_object(%{
+Genswarm.Objects.ObjectSupervisor.start_object(%{
   name: :my_object,
   swarm_name: "my-swarm",
   handler: MyApp.Objects.MyHandler,
@@ -460,27 +460,27 @@ SubzeroclawSwarm.Objects.ObjectSupervisor.start_object(%{
 ### Stopping Objects
 
 ```elixir
-SubzeroclawSwarm.Objects.ObjectSupervisor.stop_object("my-swarm", :my_object)
+Genswarm.Objects.ObjectSupervisor.stop_object("my-swarm", :my_object)
 ```
 
 ### Listing Objects
 
 ```elixir
-SubzeroclawSwarm.Objects.ObjectSupervisor.list_objects("my-swarm")
+Genswarm.Objects.ObjectSupervisor.list_objects("my-swarm")
 # => [%{name: :eval, pid: "#PID<0.123.0>", state: :idle, handler: Evaluator}]
 ```
 
 ### Getting Object Status
 
 ```elixir
-SubzeroclawSwarm.Objects.ObjectServer.get_status("my-swarm", :eval)
+Genswarm.Objects.ObjectServer.get_status("my-swarm", :eval)
 # => %{name: :eval, state: :idle, message_count: 47, handler: Evaluator, ...}
 ```
 
 ### Delivering Messages Programmatically
 
 ```elixir
-SubzeroclawSwarm.Objects.ObjectServer.deliver_message(
+Genswarm.Objects.ObjectServer.deliver_message(
   "my-swarm",
   :eval,
   :pop_gen,  # from

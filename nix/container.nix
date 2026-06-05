@@ -1,4 +1,4 @@
-# NixOS-based container image builder for SubzeroclawSwarm agents
+# NixOS-based container image builder for Genswarm agents
 #
 # This creates Docker images with NixOS that include only the
 # tools specified for each agent. Images are minimal and reproducible.

@@ -13,14 +13,14 @@
 #   5. Stop + restart preserves overlay (state survives)
 #   6. Snapshotting the effective config to a .exs
 
-alias SubzeroclawSwarm.SwarmManager
-alias SubzeroclawSwarm.Routing.Router
-alias SubzeroclawSwarm.CLI.SwarmRegistry
-alias SubzeroclawSwarm.Config.{Loader, ExsWriter}
+alias Genswarm.SwarmManager
+alias Genswarm.Routing.Router
+alias Genswarm.CLI.SwarmRegistry
+alias Genswarm.Config.{Loader, ExsWriter}
 
 defmodule Demo.Observer do
   @moduledoc "An object that just counts messages it receives."
-  @behaviour SubzeroclawSwarm.Objects.ObjectHandler
+  @behaviour Genswarm.Objects.ObjectHandler
 
   @impl true
   def init(_config), do: {:ok, %{count: 0}}

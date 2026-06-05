@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# szc-wrapper-direct.sh - Direct protocol translator for SubzeroclawSwarm
+# szc-wrapper-direct.sh - Direct protocol translator for Genswarm
 #
 # Usage: szc-wrapper-direct.sh <agent_name> <subzeroclaw_path> [skills_dir]
 #

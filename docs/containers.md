@@ -1,10 +1,10 @@
 # Container Images & Configuration
 
-This guide covers building NixOS-based container images for SubzeroclawSwarm agents, configuring presets, managing volumes, and setting up environments.
+This guide covers building NixOS-based container images for Genswarm agents, configuring presets, managing volumes, and setting up environments.
 
 ## Overview
 
-SubzeroclawSwarm uses NixOS-based Docker containers built with Nix flakes. This provides:
+Genswarm uses NixOS-based Docker containers built with Nix flakes. This provides:
 - Reproducible builds with pinned dependencies
 - Minimal images containing only required tools
 - Easy customization via presets and tool lists
@@ -48,12 +48,12 @@ Create custom images by calling `mkAgentContainer` in your flake:
 ```nix
 # In your flake.nix
 {
-  inputs.subzero-swarm.url = "github:genlayer/subzero-swarm";
+  inputs.genswarm.url = "github:genlayer/genswarm";
 
-  outputs = { self, nixpkgs, subzero-swarm, ... }:
+  outputs = { self, nixpkgs, genswarm, ... }:
     let
       pkgs = nixpkgs.legacyPackages.x86_64-linux;
-      szsLib = subzero-swarm.packages.x86_64-linux.lib;
+      szsLib = genswarm.packages.x86_64-linux.lib;
     in {
       packages.x86_64-linux.my-agent = szsLib.mkAgentContainer {
         name = "my-agent";
@@ -372,7 +372,7 @@ In swarm config:
 
 ### Loading from .env Files
 
-SubzeroclawSwarm automatically loads `.env` files from:
+Genswarm automatically loads `.env` files from:
 1. Current working directory
 2. `~/.subzeroclaw/.env`
 
@@ -428,17 +428,17 @@ nix-shell -p postgresql --run "psql ..."
 {
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-24.11";
-    subzero-swarm.url = "github:genlayer/subzero-swarm";
+    genswarm.url = "github:genlayer/genswarm";
   };
 
-  outputs = { self, nixpkgs, subzero-swarm, ... }:
+  outputs = { self, nixpkgs, genswarm, ... }:
     let
       system = "x86_64-linux";
       pkgs = nixpkgs.legacyPackages.${system};
 
       # Import container builder
-      toolPresets = import "${subzero-swarm}/nix/tool-presets.nix" { inherit pkgs; };
-      containerLib = import "${subzero-swarm}/nix/container.nix" {
+      toolPresets = import "${genswarm}/nix/tool-presets.nix" { inherit pkgs; };
+      containerLib = import "${genswarm}/nix/container.nix" {
         inherit pkgs toolPresets;
       };
 

@@ -43,7 +43,7 @@ defmodule Mix.Tasks.Swarm.Init do
 
   use Mix.Task
 
-  alias SubzeroclawSwarm.CLI.{Output, ProjectGenerator}
+  alias Genswarm.CLI.{Output, ProjectGenerator}
 
   @impl Mix.Task
   def run(args) do

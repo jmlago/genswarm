@@ -33,7 +33,7 @@ defmodule Mix.Tasks.Swarm.Build do
 
   use Mix.Task
 
-  alias SubzeroclawSwarm.CLI.Output
+  alias Genswarm.CLI.Output
 
   @available_images ["base", "python", "node", "elixir"]
 

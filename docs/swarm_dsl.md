@@ -1,6 +1,6 @@
 # Swarm Configuration DSL
 
-This document describes the Domain-Specific Language (DSL) for defining SubzeroclawSwarm configurations. Use this guide to create swarm configurations that define agent networks with custom topologies and deployment strategies.
+This document describes the Domain-Specific Language (DSL) for defining Genswarm configurations. Use this guide to create swarm configurations that define agent networks with custom topologies and deployment strategies.
 
 For CLI usage and commands, see the [CLI Reference](../README.md#cli-reference) in the main README.
 
@@ -385,11 +385,11 @@ Objects require either `handler` (native Elixir) or `backend` (Docker/SSH).
 
 ### Object Handler Behaviour
 
-Objects implement the `SubzeroclawSwarm.Objects.ObjectHandler` behaviour:
+Objects implement the `Genswarm.Objects.ObjectHandler` behaviour:
 
 ```elixir
 defmodule MyApp.Objects.Evaluator do
-  @behaviour SubzeroclawSwarm.Objects.ObjectHandler
+  @behaviour Genswarm.Objects.ObjectHandler
 
   @impl true
   def init(config) do

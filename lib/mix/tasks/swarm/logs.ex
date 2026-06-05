@@ -31,8 +31,8 @@ defmodule Mix.Tasks.Swarm.Logs do
 
   use Mix.Task
 
-  alias SubzeroclawSwarm.CLI.{Output, SwarmRegistry, EnvManager}
-  alias SubzeroclawSwarm.Observability.LogStore
+  alias Genswarm.CLI.{Output, SwarmRegistry, EnvManager}
+  alias Genswarm.Observability.LogStore
 
   # Conversation event types
   @conversation_types [
@@ -81,7 +81,7 @@ defmodule Mix.Tasks.Swarm.Logs do
       # For streaming, we need the full app (LogStore.subscribe)
       # For static logs, just SQLite is enough
       if opts[:follow] do
-        {:ok, _} = Application.ensure_all_started(:subzeroclaw_swarm)
+        {:ok, _} = Application.ensure_all_started(:genswarm)
       else
         load_env()
         SwarmRegistry.init()
@@ -345,7 +345,7 @@ defmodule Mix.Tasks.Swarm.Logs do
 
   defp load_env do
     case EnvManager.auto_load() do
-      {:ok, path} -> IO.puts("[SubzeroclawSwarm] Loaded environment from #{path}")
+      {:ok, path} -> IO.puts("[Genswarm] Loaded environment from #{path}")
       {:error, :not_found} -> :ok
     end
   end

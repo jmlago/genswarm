@@ -52,7 +52,7 @@ defmodule Mix.Tasks.Swarm.Test do
         ]
       )
 
-    Application.ensure_all_started(:subzeroclaw_swarm)
+    Application.ensure_all_started(:genswarm)
 
     # Mock mode: set env var so subzeroclaw uses canned responses instead of API
     if opts[:mock] do
@@ -95,7 +95,7 @@ defmodule Mix.Tasks.Swarm.Test do
       System.halt(1)
     end
 
-    Mix.shell().info("\n=== SubzeroclawSwarm E2E Tests ===")
+    Mix.shell().info("\n=== Genswarm E2E Tests ===")
     Mix.shell().info("Found #{length(all_files)} configurations\n")
 
     results =
@@ -221,10 +221,10 @@ defmodule Mix.Tasks.Swarm.Test do
     task =
       Task.async(fn ->
         try do
-          case SubzeroclawSwarm.SwarmManager.start_from_config(config) do
+          case Genswarm.SwarmManager.start_from_config(config) do
             {:ok, swarm_name} ->
               Process.sleep(timeout)
-              SubzeroclawSwarm.SwarmManager.stop(swarm_name)
+              Genswarm.SwarmManager.stop(swarm_name)
               {:ok, %{status: :ran, swarm_name: swarm_name}}
 
             {:error, reason} ->

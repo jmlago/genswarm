@@ -17,7 +17,7 @@ defmodule Mix.Tasks.Swarm.Scale do
 
   use Mix.Task
 
-  alias SubzeroclawSwarm.CLI.{DaemonBridge, Output}
+  alias Genswarm.CLI.{DaemonBridge, Output}
 
   @shortdoc "Scale an agent group to a target count"
 
@@ -25,7 +25,7 @@ defmodule Mix.Tasks.Swarm.Scale do
   def run([swarm, base, count_str]) do
     case Integer.parse(count_str) do
       {n, ""} when n >= 0 ->
-        Application.ensure_all_started(:subzeroclaw_swarm)
+        Application.ensure_all_started(:genswarm)
         scale(swarm, String.to_atom(base), n)
 
       _ ->

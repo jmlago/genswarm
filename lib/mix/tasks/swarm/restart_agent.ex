@@ -12,7 +12,7 @@ defmodule Mix.Tasks.Swarm.RestartAgent do
 
   use Mix.Task
 
-  alias SubzeroclawSwarm.CLI.{Output, APIClient}
+  alias Genswarm.CLI.{Output, APIClient}
 
   @shortdoc "Restart a specific agent"
 

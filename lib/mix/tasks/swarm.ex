@@ -1,8 +1,8 @@
 defmodule Mix.Tasks.Swarm do
-  @shortdoc "SubzeroclawSwarm CLI commands"
+  @shortdoc "Genswarm CLI commands"
 
   @moduledoc """
-  CLI commands for managing SubzeroclawSwarm.
+  CLI commands for managing Genswarm.
 
   ## Commands
 
@@ -25,7 +25,7 @@ defmodule Mix.Tasks.Swarm do
 
   use Mix.Task
 
-  alias SubzeroclawSwarm.CLI.Output
+  alias Genswarm.CLI.Output
 
   def run(args) do
     case args do
@@ -97,7 +97,7 @@ defmodule Mix.Tasks.Swarm.Start do
 
   use Mix.Task
 
-  alias SubzeroclawSwarm.CLI.{Output, SwarmRegistry, EnvManager}
+  alias Genswarm.CLI.{Output, SwarmRegistry, EnvManager}
 
   @impl Mix.Task
   def run(args) do
@@ -141,9 +141,9 @@ defmodule Mix.Tasks.Swarm.Start do
 
   defp start_foreground(config_path) do
     Output.info("Starting swarm in foreground...")
-    {:ok, _} = Application.ensure_all_started(:subzeroclaw_swarm)
+    {:ok, _} = Application.ensure_all_started(:genswarm)
 
-    case SubzeroclawSwarm.start_swarm(config_path) do
+    case Genswarm.start_swarm(config_path) do
       {:ok, swarm_name} ->
         # Register in SQLite
         SwarmRegistry.register_swarm(swarm_name, System.pid() |> String.to_integer(), config_path)
@@ -248,8 +248,8 @@ defmodule Mix.Tasks.Swarm.Start.Daemon do
   @moduledoc false
   use Mix.Task
 
-  alias SubzeroclawSwarm.CLI.{SwarmRegistry, EnvManager}
-  alias SubzeroclawSwarm.SwarmManager
+  alias Genswarm.CLI.{SwarmRegistry, EnvManager}
+  alias Genswarm.SwarmManager
 
   # Poll for tasks every 500ms
   @task_poll_interval 500
@@ -259,9 +259,9 @@ defmodule Mix.Tasks.Swarm.Start.Daemon do
     EnvManager.auto_load()
     SwarmRegistry.init()
 
-    {:ok, _} = Application.ensure_all_started(:subzeroclaw_swarm)
+    {:ok, _} = Application.ensure_all_started(:genswarm)
 
-    case SubzeroclawSwarm.start_swarm(config_path) do
+    case Genswarm.start_swarm(config_path) do
       {:ok, swarm_name} ->
         pid = System.pid() |> String.to_integer()
         SwarmRegistry.register_swarm(swarm_name, pid, config_path)
@@ -278,7 +278,7 @@ defmodule Mix.Tasks.Swarm.Start.Daemon do
         IO.puts("[#{swarm_name}] Swarm running (PID: #{pid})")
 
         # Keep alive, poll for tasks, and handle shutdown
-        ref = Process.monitor(Process.whereis(SubzeroclawSwarm.Supervisor))
+        ref = Process.monitor(Process.whereis(Genswarm.Supervisor))
         daemon_loop(swarm_name, ref)
 
       {:error, reason} ->
@@ -422,7 +422,7 @@ defmodule Mix.Tasks.Swarm.Stop do
 
   use Mix.Task
 
-  alias SubzeroclawSwarm.CLI.{Output, SwarmRegistry}
+  alias Genswarm.CLI.{Output, SwarmRegistry}
 
   @impl Mix.Task
   def run([swarm_name]) do
@@ -499,7 +499,7 @@ defmodule Mix.Tasks.Swarm.Status do
 
   use Mix.Task
 
-  alias SubzeroclawSwarm.CLI.{Output, SwarmRegistry}
+  alias Genswarm.CLI.{Output, SwarmRegistry}
 
   @impl Mix.Task
   def run(args) do
@@ -525,9 +525,9 @@ defmodule Mix.Tasks.Swarm.Status do
   end
 
   defp load_env do
-    alias SubzeroclawSwarm.CLI.EnvManager
+    alias Genswarm.CLI.EnvManager
     case EnvManager.auto_load() do
-      {:ok, path} -> IO.puts("[SubzeroclawSwarm] Loaded environment from #{path}")
+      {:ok, path} -> IO.puts("[Genswarm] Loaded environment from #{path}")
       {:error, :not_found} -> :ok
     end
   end
@@ -779,7 +779,7 @@ defmodule Mix.Tasks.Swarm.Task do
 
   use Mix.Task
 
-  alias SubzeroclawSwarm.CLI.{Output, APIClient, SwarmRegistry}
+  alias Genswarm.CLI.{Output, APIClient, SwarmRegistry}
 
   @impl Mix.Task
   def run([swarm_name, agent_name, task]) do
@@ -805,9 +805,9 @@ defmodule Mix.Tasks.Swarm.Task do
   end
 
   defp load_env do
-    alias SubzeroclawSwarm.CLI.EnvManager
+    alias Genswarm.CLI.EnvManager
     case EnvManager.auto_load() do
-      {:ok, path} -> IO.puts("[SubzeroclawSwarm] Loaded environment from #{path}")
+      {:ok, path} -> IO.puts("[Genswarm] Loaded environment from #{path}")
       {:error, :not_found} -> :ok
     end
   end
@@ -842,9 +842,9 @@ defmodule Mix.Tasks.Swarm.ListSkills do
   @impl Mix.Task
   def run(_args) do
     # SkillsManager needs full app
-    {:ok, _} = Application.ensure_all_started(:subzeroclaw_swarm)
+    {:ok, _} = Application.ensure_all_started(:genswarm)
 
-    skills = SubzeroclawSwarm.Skills.SkillsManager.list_skills()
+    skills = Genswarm.Skills.SkillsManager.list_skills()
 
     if Enum.empty?(skills) do
       Mix.shell().info("No skills found in priv/skills/")

@@ -19,13 +19,13 @@ defmodule Mix.Tasks.Swarm.Msg do
 
   use Mix.Task
 
-  alias SubzeroclawSwarm.CLI.Output
-  alias SubzeroclawSwarm.Routing.Router
+  alias Genswarm.CLI.Output
+  alias Genswarm.Routing.Router
 
   @impl Mix.Task
   def run([swarm_name, from, to, message]) do
     # Router needs full app
-    {:ok, _} = Application.ensure_all_started(:subzeroclaw_swarm)
+    {:ok, _} = Application.ensure_all_started(:genswarm)
 
     from_atom = String.to_atom(from)
     to_atom = String.to_atom(to)

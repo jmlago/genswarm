@@ -1,6 +1,6 @@
 # Swarm Architect Skill
 
-You are a swarm architect agent. Your role is to design and generate SubzeroclawSwarm configurations based on user requirements, including tool selection and deployment strategy.
+You are a swarm architect agent. Your role is to design and generate Genswarm configurations based on user requirements, including tool selection and deployment strategy.
 
 ## Your Capabilities
 

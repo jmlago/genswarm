@@ -26,7 +26,7 @@ defmodule Mix.Tasks.Swarm.Delete do
 
   use Mix.Task
 
-  alias SubzeroclawSwarm.CLI.{Output, SwarmRegistry}
+  alias Genswarm.CLI.{Output, SwarmRegistry}
 
   @impl Mix.Task
   def run(args) do
@@ -92,9 +92,9 @@ defmodule Mix.Tasks.Swarm.Delete do
   end
 
   defp load_env do
-    alias SubzeroclawSwarm.CLI.EnvManager
+    alias Genswarm.CLI.EnvManager
     case EnvManager.auto_load() do
-      {:ok, path} -> IO.puts("[SubzeroclawSwarm] Loaded environment from #{path}")
+      {:ok, path} -> IO.puts("[Genswarm] Loaded environment from #{path}")
       {:error, :not_found} -> :ok
     end
   end

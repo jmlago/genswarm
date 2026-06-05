@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Test script for SubzeroclawSwarm REST API
+# Test script for Genswarm REST API
 #
 # Tests:
 # 1. Party swarm (10 agents, full mesh)
@@ -109,7 +109,7 @@ check_json_field() {
 # Test Setup
 # ============================================================================
 
-log_section "SubzeroclawSwarm REST API Test Suite"
+log_section "Genswarm REST API Test Suite"
 
 log_info "Project directory: $PROJECT_DIR"
 log_info "API base URL: $API_BASE"
@@ -130,7 +130,7 @@ log_section "Test 0: API Root"
 
 log_info "Testing GET /"
 response=$(api_get "/")
-if echo "$response" | grep -q "SubzeroclawSwarm API"; then
+if echo "$response" | grep -q "Genswarm API"; then
     log_success "API root returns API info"
 else
     log_error "API root response invalid"

@@ -1,4 +1,4 @@
-# SubzeroclawSwarm
+# Genswarm
 
 An Elixir/OTP orchestrator for managing swarms of subzeroclaw agents with pluggable backends, arbitrary directed graph topologies, per-agent skills, and fault tolerance via OTP supervision trees.
 
@@ -537,7 +537,7 @@ Objects are Elixir modules implementing the `ObjectHandler` behaviour. They part
 
 ```elixir
 defmodule MyApp.Objects.Evaluator do
-  @behaviour SubzeroclawSwarm.Objects.ObjectHandler
+  @behaviour Genswarm.Objects.ObjectHandler
 
   @impl true
   def init(config), do: {:ok, %{config: config}}
@@ -972,7 +972,7 @@ The bwrap backend searches for the `subzeroclaw` binary in this order:
 
 ```elixir
 # From config file
-{:ok, swarm_name} = SubzeroclawSwarm.start_swarm("path/to/config.exs")
+{:ok, swarm_name} = Genswarm.start_swarm("path/to/config.exs")
 
 # From config map
 config = %{
@@ -980,35 +980,35 @@ config = %{
   agents: [%{name: :agent1, backend: :local}],
   topology: []
 }
-{:ok, swarm_name} = SubzeroclawSwarm.start_swarm_from_config(config)
+{:ok, swarm_name} = Genswarm.start_swarm_from_config(config)
 ```
 
 ### Managing Swarms
 
 ```elixir
 # Get status
-{:ok, status} = SubzeroclawSwarm.status("my-swarm")
+{:ok, status} = Genswarm.status("my-swarm")
 
 # Send task
-:ok = SubzeroclawSwarm.send_task("my-swarm", :agent1, "do something")
+:ok = Genswarm.send_task("my-swarm", :agent1, "do something")
 
 # List swarms
-swarms = SubzeroclawSwarm.list_swarms()
+swarms = Genswarm.list_swarms()
 
 # Get topology
-{:ok, topology} = SubzeroclawSwarm.get_topology("my-swarm")
+{:ok, topology} = Genswarm.get_topology("my-swarm")
 
 # Stop swarm
-:ok = SubzeroclawSwarm.stop_swarm("my-swarm")
+:ok = Genswarm.stop_swarm("my-swarm")
 ```
 
 ### Subscribing to Events
 
 ```elixir
 # Subscribe to swarm events
-Phoenix.PubSub.subscribe(SubzeroclawSwarm.PubSub, "swarm:my-swarm")
-Phoenix.PubSub.subscribe(SubzeroclawSwarm.PubSub, "swarm:my-swarm:output")
-Phoenix.PubSub.subscribe(SubzeroclawSwarm.PubSub, "swarm:my-swarm:routing")
+Phoenix.PubSub.subscribe(Genswarm.PubSub, "swarm:my-swarm")
+Phoenix.PubSub.subscribe(Genswarm.PubSub, "swarm:my-swarm:output")
+Phoenix.PubSub.subscribe(Genswarm.PubSub, "swarm:my-swarm:routing")
 
 # Handle events
 def handle_info({:agent_output, agent, content}, state) do

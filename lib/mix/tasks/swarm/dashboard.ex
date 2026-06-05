@@ -33,7 +33,7 @@ defmodule Mix.Tasks.Swarm.Dashboard do
 
   use Mix.Task
 
-  alias SubzeroclawSwarm.CLI.{Output, EnvManager, ServerManager}
+  alias Genswarm.CLI.{Output, EnvManager, ServerManager}
 
   @impl Mix.Task
   def run(args) do
@@ -74,7 +74,7 @@ defmodule Mix.Tasks.Swarm.Dashboard do
 
     if opts[:foreground] do
       # For foreground, start the app and run inline
-      {:ok, _} = Application.ensure_all_started(:subzeroclaw_swarm)
+      {:ok, _} = Application.ensure_all_started(:genswarm)
       start_foreground(port)
     else
       # For background, use ServerManager to spawn separate process
@@ -83,7 +83,7 @@ defmodule Mix.Tasks.Swarm.Dashboard do
   end
 
   defp start_foreground(port) do
-    case SubzeroclawSwarm.Application.start_web_server(port: port) do
+    case Genswarm.Application.start_web_server(port: port) do
       {:ok, _pid} ->
         Output.success("Dashboard started on port #{port}")
         Output.puts("  URL: #{Output.colorize("http://localhost:#{port}", :cyan)}")

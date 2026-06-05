@@ -1,4 +1,4 @@
-# NixOS module for SubzeroclawSwarm bwrap backend
+# NixOS module for Genswarm bwrap backend
 #
 # Configures the system for running 10k+ agents using bubblewrap sandboxing.
 #
@@ -34,7 +34,7 @@ let
 
 in {
   options.services.subzeroclaw-bwrap = {
-    enable = mkEnableOption "SubzeroclawSwarm bwrap backend";
+    enable = mkEnableOption "Genswarm bwrap backend";
 
     maxAgents = mkOption {
       type = types.int;
@@ -153,7 +153,7 @@ in {
 
     # Systemd slice for resource accounting
     systemd.slices.subzeroclaw = {
-      description = "SubzeroclawSwarm Agent Slice";
+      description = "Genswarm Agent Slice";
       sliceConfig = {
         MemoryAccounting = true;
         CPUAccounting = true;
@@ -169,7 +169,7 @@ in {
 
     # User service for the orchestrator
     systemd.user.services.subzeroclaw-swarm = {
-      description = "SubzeroclawSwarm Orchestrator";
+      description = "Genswarm Orchestrator";
       wantedBy = [ "default.target" ];
       after = [ "network.target" ];
 

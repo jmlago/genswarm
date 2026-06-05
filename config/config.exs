@@ -1,19 +1,19 @@
 # General application configuration
 import Config
 
-config :subzeroclaw_swarm,
+config :genswarm,
   ecto_repos: [],
   generators: [timestamp_type: :utc_datetime]
 
 # Configures the endpoint
-config :subzeroclaw_swarm, SubzeroclawSwarmWeb.Endpoint,
+config :genswarm, GenswarmWeb.Endpoint,
   url: [host: "localhost"],
   adapter: Bandit.PhoenixAdapter,
   render_errors: [
-    formats: [json: SubzeroclawSwarmWeb.ErrorJSON],
+    formats: [json: GenswarmWeb.ErrorJSON],
     layout: false
   ],
-  pubsub_server: SubzeroclawSwarm.PubSub
+  pubsub_server: Genswarm.PubSub
 
 # Configures Elixir's Logger
 config :logger, :console,
@@ -23,8 +23,8 @@ config :logger, :console,
 # Use Jason for JSON parsing
 config :phoenix, :json_library, Jason
 
-# SubzeroclawSwarm specific configuration
-config :subzeroclaw_swarm,
+# Genswarm specific configuration
+config :genswarm,
   # Default path to subzeroclaw binary
   subzeroclaw_path: System.get_env("SUBZEROCLAW_PATH", "subzeroclaw"),
   # Base directory for swarm data

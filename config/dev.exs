@@ -1,7 +1,7 @@
 import Config
 
 # For development, we disable any cache and enable debugging
-config :subzeroclaw_swarm, SubzeroclawSwarmWeb.Endpoint,
+config :genswarm, GenswarmWeb.Endpoint,
   http: [ip: {127, 0, 0, 1}, port: 4000],
   check_origin: false,
   code_reloader: true,
@@ -9,7 +9,7 @@ config :subzeroclaw_swarm, SubzeroclawSwarmWeb.Endpoint,
   secret_key_base: "dev_secret_key_base_that_is_at_least_64_bytes_long_for_development_only"
 
 # Enable dev routes for dashboard
-config :subzeroclaw_swarm, dev_routes: true
+config :genswarm, dev_routes: true
 
 # Do not include metadata nor timestamps in development logs
 config :logger, :console, format: "[$level] $message\n"

@@ -22,7 +22,7 @@ defmodule Mix.Tasks.Swarm.Up do
 
   use Mix.Task
 
-  alias SubzeroclawSwarm.CLI.{Output, ServerManager, EnvManager}
+  alias Genswarm.CLI.{Output, ServerManager, EnvManager}
 
   @impl Mix.Task
   def run(args) do

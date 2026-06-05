@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# szc-wrapper-fifo.sh - FIFO-based protocol translator for SubzeroclawSwarm
+# szc-wrapper-fifo.sh - FIFO-based protocol translator for Genswarm
 #
 # Usage: szc-wrapper-fifo.sh <agent_name> <subzeroclaw_path> [skills_dir]
 

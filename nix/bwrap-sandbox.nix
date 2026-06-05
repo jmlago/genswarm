@@ -1,4 +1,4 @@
-# Bubblewrap sandbox environment builder for SubzeroclawSwarm agents
+# Bubblewrap sandbox environment builder for Genswarm agents
 #
 # Reuses the same tool presets as Docker containers but builds
 # a directory structure suitable for bwrap bind-mounts.

@@ -4,4 +4,4 @@ import Config
 config :logger, level: :info
 
 # Runtime production configuration
-config :subzeroclaw_swarm, SubzeroclawSwarmWeb.Endpoint, server: true
+config :genswarm, GenswarmWeb.Endpoint, server: true

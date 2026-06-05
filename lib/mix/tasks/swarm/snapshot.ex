@@ -12,8 +12,8 @@ defmodule Mix.Tasks.Swarm.Snapshot do
 
   use Mix.Task
 
-  alias SubzeroclawSwarm.Config.{ExsWriter, SwarmConfig}
-  alias SubzeroclawSwarm.CLI.{DaemonBridge, Output}
+  alias Genswarm.Config.{ExsWriter, SwarmConfig}
+  alias Genswarm.CLI.{DaemonBridge, Output}
 
   @shortdoc "Emit current swarm config as .exs (seed ⊕ overlay)"
 
@@ -24,7 +24,7 @@ defmodule Mix.Tasks.Swarm.Snapshot do
 
     case rest do
       [swarm] ->
-        Application.ensure_all_started(:subzeroclaw_swarm)
+        Application.ensure_all_started(:genswarm)
         snapshot(swarm, opts)
 
       _ ->

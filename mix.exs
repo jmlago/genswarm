@@ -1,9 +1,9 @@
-defmodule SubzeroclawSwarm.MixProject do
+defmodule Genswarm.MixProject do
   use Mix.Project
 
   def project do
     [
-      app: :subzeroclaw_swarm,
+      app: :genswarm,
       version: "0.1.0",
       elixir: "~> 1.14",
       elixirc_paths: elixirc_paths(Mix.env()),
@@ -16,7 +16,7 @@ defmodule SubzeroclawSwarm.MixProject do
 
   defp escript do
     [
-      main_module: SubzeroclawSwarm.CLI,
+      main_module: Genswarm.CLI,
       name: "swarm",
       # Don't auto-start the application
       app: nil
@@ -25,7 +25,7 @@ defmodule SubzeroclawSwarm.MixProject do
 
   def application do
     [
-      mod: {SubzeroclawSwarm.Application, []},
+      mod: {Genswarm.Application, []},
       extra_applications: [:logger, :runtime_tools, :ssh]
     ]
   end

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# szc-wrapper.sh - Shell-based protocol translator for SubzeroclawSwarm
+# szc-wrapper.sh - Shell-based protocol translator for Genswarm
 #
 # Usage: szc-wrapper.sh <agent_name> <subzeroclaw_path> [skills_dir]
 #

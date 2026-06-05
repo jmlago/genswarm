@@ -1,5 +1,5 @@
 {
-  description = "SubzeroclawSwarm - Elixir/OTP orchestrator for agent swarms";
+  description = "Genswarm - Elixir/OTP orchestrator for agent swarms";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-24.11";
@@ -89,7 +89,7 @@
             export HEX_HOME=$PWD/.nix-hex
             export PATH=$MIX_HOME/bin:$HEX_HOME/bin:$PATH
             export ERL_AFLAGS="-kernel shell_history enabled"
-            echo "SubzeroclawSwarm dev shell"
+            echo "Genswarm dev shell"
             echo ""
             echo "Commands:"
             echo "  mix deps.get && mix phx.server  # Start orchestrator"
@@ -108,7 +108,7 @@
 
           # The orchestrator Phoenix application
           orchestrator = pkgs.beamPackages.mixRelease {
-            pname = "subzeroclaw_swarm";
+            pname = "genswarm";
             version = "0.1.0";
             src = ./.;
             mixEnv = "prod";
