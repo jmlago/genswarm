@@ -21,7 +21,14 @@ defmodule Genswarms.Backends.EndpointPolicy do
       endpoint: one that is unset (default), equal to the server's own
       `SUBZEROCLAW_ENDPOINT`, or whose host is in the `GENSWARMS_ALLOWED_ENDPOINTS`
       allowlist. For any other (e.g. per-agent custom) endpoint the env key is
-      withheld — the config must supply its own `:api_key` to use that endpoint.
+      withheld.
+
+  To pair a custom endpoint with a key, either add its host to
+  `GENSWARMS_ALLOWED_ENDPOINTS` (then the env key is forwarded), or set an
+  explicit `:api_key` in that agent's config. Note: the dynamic add-agent API
+  (`parse_agent_spec`) does not currently parse `:api_key`, so the explicit-key
+  route applies to `.exs`/`config`-loaded agents — API-added agents with a
+  custom endpoint must use the allowlist.
 
   This stops the env key from ever being co-forwarded to an untrusted endpoint,
   while leaving the common cases (no custom endpoint; or custom endpoint with an
