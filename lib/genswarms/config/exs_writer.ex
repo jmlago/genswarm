@@ -22,6 +22,11 @@ defmodule Genswarms.Config.ExsWriter do
   @sensitive_key_regex ~r/(?:key|secret|token|password|passwd|credential)/i
   @redaction_placeholder "[REDACTED]"
 
+  # Keys that match the regex but name a non-secret (a path/reference, not the
+  # secret value itself) — must NOT be redacted or snapshot round-trip breaks
+  # (e.g. an SSH agent's key_path is a filename, not a private key).
+  @redaction_exceptions ~w(key_path)
+
   @spec to_exs_source(SwarmConfig.t()) :: String.t()
   def to_exs_source(%SwarmConfig{} = config) do
     header =
@@ -157,5 +162,8 @@ defmodule Genswarms.Config.ExsWriter do
 
   defp redact_secrets(other), do: other
 
-  defp sensitive_key?(key), do: String.match?(to_string(key), @sensitive_key_regex)
+  defp sensitive_key?(key) do
+    str = to_string(key)
+    str not in @redaction_exceptions and String.match?(str, @sensitive_key_regex)
+  end
 end

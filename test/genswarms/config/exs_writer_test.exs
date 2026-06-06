@@ -83,4 +83,22 @@ defmodule Genswarms.Config.ExsWriterTest do
     refute src =~ "[REDACTED]"
     assert src =~ "population_size"
   end
+
+  test "key_path is NOT redacted (it is a filename, not a secret)" do
+    # Round-trip must preserve key_path so restored SSH agents still work.
+    src = source([%{name: :sshagent, backend: :local, config: %{key_path: "~/.ssh/id_ed25519"}}])
+    assert src =~ "~/.ssh/id_ed25519"
+    refute src =~ "[REDACTED]"
+  end
+
+  test "api_key alongside key_path: only the secret is redacted" do
+    src =
+      source([
+        %{name: :a, backend: :local, config: %{api_key: "sk-SECRET", key_path: "~/.ssh/id"}}
+      ])
+
+    refute src =~ "sk-SECRET"
+    assert src =~ "~/.ssh/id"
+    assert src =~ "[REDACTED]"
+  end
 end
