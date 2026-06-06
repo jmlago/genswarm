@@ -82,6 +82,12 @@ markdown_extensions:
 
 plugins:
   - search
+  - blog:
+      blog_dir: blog
+      blog_toc: true
+      post_url_format: "{slug}"
+      post_readtime: true
+      post_date_format: long
 
 nav:
   - Home: README.md
@@ -105,3 +111,5 @@ nav:
       - Observability: observability.md
       - Testing: testing.md
       - Troubleshooting: troubleshooting.md
+  - Blog:
+      - blog/index.md
