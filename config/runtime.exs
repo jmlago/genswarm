@@ -30,4 +30,7 @@ end
 config :genswarms,
   subzeroclaw_path: System.get_env("SUBZEROCLAW_PATH", "subzeroclaw"),
   swarm_data_dir: System.get_env("SWARM_DATA_DIR", "~/.subzeroclaw/swarms"),
-  skills_dir: System.get_env("SKILLS_DIR", "priv/skills")
+  skills_dir: System.get_env("SKILLS_DIR", "priv/skills"),
+  # Directory that API-supplied config_path values must stay within. Unset →
+  # the server's working directory. See Genswarms.Config.PathGuard.
+  swarm_config_dir: System.get_env("GENSWARMS_SWARM_CONFIG_DIR")
