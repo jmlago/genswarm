@@ -10,6 +10,11 @@ defmodule GenswarmsWeb.EventsController do
   use GenswarmsWeb, :controller
 
   alias Genswarms.Observability.EventStore
+  alias Genswarms.SafeAtom
+
+  # Sentinel for an agent filter that names an unknown agent: no stored event can
+  # carry it, so the query returns empty rather than leaking all agents' events.
+  @unknown_agent :"$unknown_agent$"
 
   @doc """
   Lists events with optional filtering.
@@ -106,7 +111,9 @@ defmodule GenswarmsWeb.EventsController do
 
     opts =
       if params["agent"] do
-        agent = String.to_atom(params["agent"])
+        # Resolve to an existing atom only (atom-exhaustion DoS guard). An
+        # unknown name becomes a sentinel that matches no event.
+        agent = SafeAtom.existing(params["agent"]) || @unknown_agent
         Keyword.put(opts, :agent, agent)
       else
         opts

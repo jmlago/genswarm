@@ -5,6 +5,7 @@ defmodule GenswarmsWeb.SwarmController do
 
   use GenswarmsWeb, :controller
 
+  alias Genswarms.SafeAtom
   alias Genswarms.SwarmManager
   alias Genswarms.Agents.{AgentSupervisor, AgentServer}
   alias Genswarms.Objects.{ObjectSupervisor, ObjectServer}
@@ -285,11 +286,18 @@ defmodule GenswarmsWeb.SwarmController do
   Body: { "from": "agent1", "to": "agent2", "content": "message" }
   """
   def route_message(conn, %{"name" => name, "from" => from, "to" => to, "content" => content}) do
-    from_atom = String.to_atom(from)
-    to_atom = String.to_atom(to)
-
-    Router.route(name, from_atom, to_atom, content)
-    json(conn, %{status: "routed", from: from, to: to, swarm: name})
+    # from/to must name existing agents — resolve to existing atoms only so
+    # request input can't mint atoms (atom-exhaustion DoS).
+    with from_atom when not is_nil(from_atom) <- SafeAtom.existing(from),
+         to_atom when not is_nil(to_atom) <- SafeAtom.existing(to) do
+      Router.route(name, from_atom, to_atom, content)
+      json(conn, %{status: "routed", from: from, to: to, swarm: name})
+    else
+      nil ->
+        conn
+        |> put_status(:not_found)
+        |> json(%{error: "Unknown 'from' or 'to' agent"})
+    end
   end
 
   def route_message(conn, _params) do
@@ -363,9 +371,17 @@ defmodule GenswarmsWeb.SwarmController do
   GET /api/swarms/:swarm_name/agents/:agent_name
   """
   def show_agent(conn, %{"swarm_name" => swarm_name, "agent_name" => agent_name}) do
-    agent_name = String.to_atom(agent_name)
+    case SafeAtom.existing(agent_name) do
+      nil ->
+        conn |> put_status(:not_found) |> json(%{error: "Agent not found"})
 
-    case AgentServer.get_status(swarm_name, agent_name) do
+      agent_atom ->
+        do_show_agent(conn, swarm_name, agent_atom)
+    end
+  end
+
+  defp do_show_agent(conn, swarm_name, agent_atom) do
+    case AgentServer.get_status(swarm_name, agent_atom) do
       status when is_map(status) ->
         json(conn, status)
 
@@ -376,6 +392,11 @@ defmodule GenswarmsWeb.SwarmController do
     end
   rescue
     _ ->
+      conn
+      |> put_status(:not_found)
+      |> json(%{error: "Agent not found"})
+  catch
+    :exit, _ ->
       conn
       |> put_status(:not_found)
       |> json(%{error: "Agent not found"})
@@ -390,24 +411,34 @@ defmodule GenswarmsWeb.SwarmController do
   def send_task(conn, %{"swarm_name" => swarm_name, "agent_name" => agent_name, "task" => task}) do
     alias Genswarms.CLI.SwarmRegistry
 
-    # Try in-process first, fall back to task queue for daemon swarms
-    result =
-      try do
-        SwarmManager.send_task(swarm_name, agent_name, task)
-      catch
-        :exit, {:noproc, _} ->
-          # Daemon swarm - queue task in SQLite for daemon to pick up
-          SwarmRegistry.queue_task(swarm_name, agent_name, task)
-      end
-
-    case result do
-      :ok ->
-        json(conn, %{status: "sent", agent: agent_name, task: task})
-
-      {:error, reason} ->
+    # Resolve to an existing atom up front so an unknown agent name is rejected
+    # before SwarmManager/SwarmRegistry can intern it (atom-exhaustion DoS).
+    case SafeAtom.existing(agent_name) do
+      nil ->
         conn
-        |> put_status(:bad_request)
-        |> json(%{error: format_error(reason)})
+        |> put_status(:not_found)
+        |> json(%{error: "Agent not found"})
+
+      agent_atom ->
+        # Try in-process first, fall back to task queue for daemon swarms
+        result =
+          try do
+            SwarmManager.send_task(swarm_name, agent_atom, task)
+          catch
+            :exit, {:noproc, _} ->
+              # Daemon swarm - queue task in SQLite for daemon to pick up
+              SwarmRegistry.queue_task(swarm_name, agent_name, task)
+          end
+
+        case result do
+          :ok ->
+            json(conn, %{status: "sent", agent: agent_name, task: task})
+
+          {:error, reason} ->
+            conn
+            |> put_status(:bad_request)
+            |> json(%{error: format_error(reason)})
+        end
     end
   end
 
@@ -423,8 +454,18 @@ defmodule GenswarmsWeb.SwarmController do
   POST /api/swarms/:swarm_name/agents/:agent_name/restart
   """
   def restart_agent(conn, %{"swarm_name" => swarm_name, "agent_name" => agent_name}) do
-    agent_name_atom = String.to_atom(agent_name)
+    case SafeAtom.existing(agent_name) do
+      nil ->
+        conn
+        |> put_status(:not_found)
+        |> json(%{error: "Agent not found"})
 
+      agent_name_atom ->
+        do_restart_agent(conn, swarm_name, agent_name, agent_name_atom)
+    end
+  end
+
+  defp do_restart_agent(conn, swarm_name, agent_name, agent_name_atom) do
     # Get current status to retrieve config
     case SwarmManager.status(swarm_name) do
       {:ok, %{config: _config}} ->
@@ -528,16 +569,20 @@ defmodule GenswarmsWeb.SwarmController do
   GET /api/swarms/:swarm_name/agents/:agent_name/logs
   """
   def agent_logs(conn, %{"swarm_name" => swarm_name, "agent_name" => agent_name}) do
-    agent_name = String.to_atom(agent_name)
+    case SafeAtom.existing(agent_name) do
+      nil ->
+        conn |> put_status(:not_found) |> json(%{error: "Agent not found"})
 
-    try do
-      logs = AgentServer.get_logs(swarm_name, agent_name)
-      json(conn, %{logs: logs})
-    rescue
-      _ ->
-        conn
-        |> put_status(:not_found)
-        |> json(%{error: "Agent not found"})
+      agent_atom ->
+        try do
+          logs = AgentServer.get_logs(swarm_name, agent_atom)
+          json(conn, %{logs: logs})
+        rescue
+          _ ->
+            conn
+            |> put_status(:not_found)
+            |> json(%{error: "Agent not found"})
+        end
     end
   end
 
@@ -547,17 +592,22 @@ defmodule GenswarmsWeb.SwarmController do
   GET /api/swarms/:swarm_name/agents/:agent_name/history
   """
   def agent_history(conn, %{"swarm_name" => swarm_name, "agent_name" => agent_name} = params) do
-    agent_name = String.to_atom(agent_name)
-    limit = Map.get(params, "limit", "100") |> String.to_integer()
+    case SafeAtom.existing(agent_name) do
+      nil ->
+        conn |> put_status(:not_found) |> json(%{error: "Agent not found"})
 
-    try do
-      history = AgentServer.get_history(swarm_name, agent_name, limit)
-      json(conn, %{history: history})
-    rescue
-      _ ->
-        conn
-        |> put_status(:not_found)
-        |> json(%{error: "Agent not found"})
+      agent_atom ->
+        limit = Map.get(params, "limit", "100") |> String.to_integer()
+
+        try do
+          history = AgentServer.get_history(swarm_name, agent_atom, limit)
+          json(conn, %{history: history})
+        rescue
+          _ ->
+            conn
+            |> put_status(:not_found)
+            |> json(%{error: "Agent not found"})
+        end
     end
   end
 
@@ -567,16 +617,20 @@ defmodule GenswarmsWeb.SwarmController do
   GET /api/swarms/:swarm_name/agents/:agent_name/skills
   """
   def agent_skills(conn, %{"swarm_name" => swarm_name, "agent_name" => agent_name}) do
-    agent_name = String.to_atom(agent_name)
+    case SafeAtom.existing(agent_name) do
+      nil ->
+        conn |> put_status(:not_found) |> json(%{error: "Agent not found"})
 
-    try do
-      skills = AgentServer.get_skills_content(swarm_name, agent_name)
-      json(conn, %{skills: skills})
-    rescue
-      _ ->
-        conn
-        |> put_status(:not_found)
-        |> json(%{error: "Agent not found"})
+      agent_atom ->
+        try do
+          skills = AgentServer.get_skills_content(swarm_name, agent_atom)
+          json(conn, %{skills: skills})
+        rescue
+          _ ->
+            conn
+            |> put_status(:not_found)
+            |> json(%{error: "Agent not found"})
+        end
     end
   end
 
@@ -592,8 +646,18 @@ defmodule GenswarmsWeb.SwarmController do
         "skill_name" => skill_name,
         "content" => content
       }) do
-    agent_name_atom = String.to_atom(agent_name)
+    case SafeAtom.existing(agent_name) do
+      nil ->
+        conn
+        |> put_status(:not_found)
+        |> json(%{error: "Agent not found"})
 
+      agent_name_atom ->
+        do_update_skill(conn, swarm_name, agent_name_atom, skill_name, content)
+    end
+  end
+
+  defp do_update_skill(conn, swarm_name, agent_name_atom, skill_name, content) do
     case AgentServer.update_skill(swarm_name, agent_name_atom, skill_name, content) do
       :ok ->
         json(conn, %{status: "updated", skill: skill_name})
@@ -995,14 +1059,25 @@ defmodule GenswarmsWeb.SwarmController do
   defp maybe_op(items, fun), do: fun.(items)
 
   defp parse_edge([from, to]) when is_binary(from) and is_binary(to) do
-    {String.to_atom(from), String.to_atom(to)}
+    edge_atoms(from, to)
   end
 
   defp parse_edge(%{"from" => from, "to" => to}) when is_binary(from) and is_binary(to) do
-    {String.to_atom(from), String.to_atom(to)}
+    edge_atoms(from, to)
   end
 
   defp parse_edge(_), do: nil
+
+  # Topology edges connect agents that already exist, so resolve both endpoints
+  # to existing atoms only. An edge naming an unknown agent is meaningless and is
+  # dropped (returns nil) — this also stops request input from minting atoms.
+  defp edge_atoms(from, to) do
+    case {SafeAtom.existing(from), SafeAtom.existing(to)} do
+      {nil, _} -> nil
+      {_, nil} -> nil
+      {from_atom, to_atom} -> {from_atom, to_atom}
+    end
+  end
 
   defp extract_topology_opts(params) do
     connections =

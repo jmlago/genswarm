@@ -11,9 +11,14 @@ defmodule GenswarmsWeb.SwarmChannel do
 
   use GenswarmsWeb, :channel
 
+  alias Genswarms.SafeAtom
   alias Genswarms.SwarmManager
   alias Genswarms.CLI.SwarmRegistry
   alias Genswarms.Observability.EventStore
+
+  # Sentinel agent atom that no stored event can carry, used so an unknown agent
+  # name filters to empty rather than minting an atom (atom-exhaustion DoS).
+  @unknown_agent :"$unknown_agent$"
 
   @impl true
   def join("swarm:" <> swarm_name, _params, socket) do
@@ -54,12 +59,18 @@ defmodule GenswarmsWeb.SwarmChannel do
   def handle_in("send_task", %{"agent" => agent, "task" => task}, socket) do
     swarm_name = socket.assigns.swarm_name
 
-    case SwarmManager.send_task(swarm_name, agent, task) do
-      :ok ->
-        {:reply, {:ok, %{status: "sent"}}, socket}
+    case SafeAtom.existing(agent) do
+      nil ->
+        {:reply, {:error, %{reason: "unknown agent"}}, socket}
 
-      {:error, reason} ->
-        {:reply, {:error, %{reason: inspect(reason)}}, socket}
+      agent_atom ->
+        case SwarmManager.send_task(swarm_name, agent_atom, task) do
+          :ok ->
+            {:reply, {:ok, %{status: "sent"}}, socket}
+
+          {:error, reason} ->
+            {:reply, {:error, %{reason: inspect(reason)}}, socket}
+        end
     end
   end
 
@@ -99,7 +110,11 @@ defmodule GenswarmsWeb.SwarmChannel do
     # in other BEAMs are visible too — the live stream then arrives via EventRelay).
     recent_logs =
       if agent do
-        EventStore.query(swarm: swarm_name, agent: String.to_atom(agent), limit: 50)
+        EventStore.query(
+          swarm: swarm_name,
+          agent: SafeAtom.existing(agent) || @unknown_agent,
+          limit: 50
+        )
       else
         EventStore.query(swarm: swarm_name, limit: 50)
       end
@@ -242,7 +257,7 @@ defmodule GenswarmsWeb.SwarmChannel do
     log_subs = socket.assigns.log_subscriptions
 
     Enum.any?(log_subs, fn {agent, _topic} ->
-      is_nil(agent) or event.agent == String.to_atom(agent)
+      is_nil(agent) or event.agent == SafeAtom.existing(agent)
     end)
   end
 
@@ -257,18 +272,26 @@ defmodule GenswarmsWeb.SwarmChannel do
   defp matches_filters?(event, filters) do
     Enum.all?(filters, fn {key, value} ->
       case key do
-        "level" -> event.level == String.to_atom(value)
-        "category" -> event.category == String.to_atom(value)
-        "event_type" -> event.event_type == String.to_atom(value)
+        "level" -> event.level == SafeAtom.existing(value)
+        "category" -> event.category == SafeAtom.existing(value)
+        "event_type" -> event.event_type == SafeAtom.existing(value)
         _ -> true
       end
     end)
   end
 
   defp maybe_add_filter(opts, filters, key, opt_key) do
+    # Resolve to an existing atom only; an unknown filter value is dropped rather
+    # than minting an atom (atom-exhaustion DoS).
     case Map.get(filters, key) do
-      nil -> opts
-      value -> Keyword.put(opts, opt_key, String.to_atom(value))
+      nil ->
+        opts
+
+      value ->
+        case SafeAtom.existing(value) do
+          nil -> opts
+          atom -> Keyword.put(opts, opt_key, atom)
+        end
     end
   end
 
