@@ -41,32 +41,41 @@ defmodule GenswarmsWeb.SkillsController do
   GET /api/skills/:name
   """
   def show(conn, %{"name" => name}) do
-    base_path = get_default_skills_path()
-    skill_path = find_skill(base_path, name)
+    # `name` is a URL segment and can contain "/" (via %2F); find_skill joins it
+    # onto base_path and reads the result, so an unguarded name is an arbitrary
+    # host file read (e.g. ..%2F..%2F..%2Fetc%2Fpasswd). Require a single plain
+    # filename, and don't echo the absolute host path.
+    if safe_skill_name?(name) do
+      case find_skill(get_default_skills_path(), name) do
+        nil ->
+          conn |> put_status(:not_found) |> json(%{error: "Skill not found"})
 
-    case skill_path do
-      nil ->
-        conn
-        |> put_status(:not_found)
-        |> json(%{error: "Skill not found"})
+        skill_path ->
+          case File.read(skill_path) do
+            {:ok, content} ->
+              json(conn, %{name: name, content: content, size: byte_size(content)})
 
-      path ->
-        case File.read(path) do
-          {:ok, content} ->
-            json(conn, %{
-              name: name,
-              path: path,
-              content: content,
-              size: byte_size(content)
-            })
-
-          {:error, reason} ->
-            conn
-            |> put_status(:internal_server_error)
-            |> json(%{error: "Failed to read skill: #{inspect(reason)}"})
-        end
+            {:error, reason} ->
+              conn
+              |> put_status(:internal_server_error)
+              |> json(%{error: "Failed to read skill: #{inspect(reason)}"})
+          end
+      end
+    else
+      conn |> put_status(:bad_request) |> json(%{error: "Invalid skill name"})
     end
   end
+
+  # A skill name from the API must be a single plain filename — no directory
+  # components, traversal, or null bytes — so it cannot escape the skills root.
+  defp safe_skill_name?(name) when is_binary(name) do
+    name != "" and
+      name not in [".", ".."] and
+      not String.contains?(name, ["/", "\\", "\0"]) and
+      Path.basename(name) == name
+  end
+
+  defp safe_skill_name?(_), do: false
 
   # Private helpers
 

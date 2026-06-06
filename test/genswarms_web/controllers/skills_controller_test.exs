@@ -75,4 +75,29 @@ defmodule GenswarmsWeb.SkillsControllerTest do
     conn = index(%{"path" => "../" <> Path.basename(root) <> "_evil"})
     assert conn.status == 400
   end
+
+  describe "show/2 (arbitrary-file-read guard)" do
+    defp show(name), do: build_conn() |> SkillsController.show(%{"name" => name})
+
+    test "reads a real skill in the root", %{root: _root} do
+      conn = show("a.md")
+      assert conn.status in [200, nil]
+      assert Jason.decode!(conn.resp_body)["content"] == "a"
+    end
+
+    test "rejects a traversal name (no arbitrary host file read)" do
+      # The decoded :name segment can contain "/" — these must be refused before
+      # any File.read, so /etc/passwd & co. are unreachable.
+      for evil <- ["../../../../etc/passwd", "/etc/passwd", "sub/x.md", "..", "evil\0.md"] do
+        conn = show(evil)
+        assert conn.status == 400, "expected 400 for #{inspect(evil)}, got #{conn.status}"
+        assert Jason.decode!(conn.resp_body)["error"] == "Invalid skill name"
+      end
+    end
+
+    test "does not return an absolute host path", %{root: _root} do
+      conn = show("a.md")
+      refute Map.has_key?(Jason.decode!(conn.resp_body), "path")
+    end
+  end
 end
