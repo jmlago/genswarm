@@ -13,20 +13,26 @@ defmodule GenswarmsWeb.SkillsController do
     - path: Optional base path to search for skills (defaults to priv/skills)
   """
   def index(conn, params) do
-    base_path = params["path"] || get_default_skills_path()
+    root = get_default_skills_path()
 
-    skills =
-      if File.dir?(base_path) do
-        list_skills_recursive(base_path, base_path)
-      else
-        []
-      end
+    # The optional `path` is attacker-controlled. Resolve it strictly inside the
+    # skills root so it can't enumerate the host filesystem (e.g. ?path=/ or
+    # ?path=../../etc), and never echo absolute host paths back.
+    case resolve_within(root, params["path"]) do
+      {:ok, dir} ->
+        skills = if File.dir?(dir), do: list_skills_recursive(root, dir), else: []
 
-    json(conn, %{
-      skills: skills,
-      base_path: base_path,
-      count: length(skills)
-    })
+        json(conn, %{
+          skills: skills,
+          base_path: relative_within(dir, root),
+          count: length(skills)
+        })
+
+      :error ->
+        conn
+        |> put_status(:bad_request)
+        |> json(%{error: "Invalid path"})
+    end
   end
 
   @doc """
@@ -69,6 +75,29 @@ defmodule GenswarmsWeb.SkillsController do
     |> Path.expand()
   end
 
+  # Resolves a client-supplied subpath strictly within `root`. nil/blank → root.
+  # Absolute paths and `..` traversal that escape `root` are rejected. Lexical
+  # (prefix-safe) containment, like the config_path guard.
+  defp resolve_within(root, nil), do: {:ok, root}
+  defp resolve_within(root, ""), do: {:ok, root}
+
+  defp resolve_within(root, sub) when is_binary(sub) do
+    candidate = Path.expand(sub, root)
+
+    if candidate == root or String.starts_with?(candidate, root <> "/") do
+      {:ok, candidate}
+    else
+      :error
+    end
+  end
+
+  defp resolve_within(_root, _), do: :error
+
+  # The directory relative to the skills root, for echoing back without leaking
+  # the absolute host path. The root itself reports as ".".
+  defp relative_within(root, root), do: "."
+  defp relative_within(dir, root), do: Path.relative_to(dir, root)
+
   defp list_skills_recursive(base_path, current_path) do
     case File.ls(current_path) do
       {:ok, entries} ->
@@ -83,10 +112,11 @@ defmodule GenswarmsWeb.SkillsController do
             String.ends_with?(entry, ".md") ->
               relative_path = Path.relative_to(full_path, base_path)
 
+              # Note: no absolute `full_path` is exposed — only the skill name and
+              # its path relative to the skills root.
               [
                 %{
                   name: entry,
-                  path: full_path,
                   relative_path: relative_path,
                   category: get_category(relative_path)
                 }
