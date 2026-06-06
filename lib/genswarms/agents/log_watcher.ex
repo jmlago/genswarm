@@ -8,6 +8,7 @@ defmodule Genswarms.Agents.LogWatcher do
 
   alias Genswarms.Routing.Router
   alias Genswarms.Observability.LogStore
+  alias Genswarms.SafeAtom
 
   @poll_interval 500
 
@@ -121,8 +122,10 @@ defmodule Genswarms.Agents.LogWatcher do
       ~r/<<SWARM_MSG:TO=([a-zA-Z_][a-zA-Z0-9_]*):START>>\n?(.*?)<<SWARM_MSG:END>>/s
       |> Regex.scan(content)
       |> Enum.map(fn [_, to, msg] ->
-        %{type: :send, to: String.to_atom(to), content: String.trim(msg)}
+        # existing-atom only (no minting from agent output); drop unknown targets
+        %{type: :send, to: SafeAtom.existing(to), content: String.trim(msg)}
       end)
+      |> Enum.reject(&is_nil(&1.to))
 
     broadcasts =
       ~r/<<SWARM_MSG:BROADCAST:START>>\n?(.*?)<<SWARM_MSG:END>>/s
@@ -281,8 +284,19 @@ defmodule Genswarms.Agents.LogWatcher do
       {:ok, content} ->
         case Jason.decode(content) do
           {:ok, %{"to" => to, "content" => msg}} ->
-            Logger.info("[#{state.swarm_name}/#{state.agent_name}] Outbox → #{to}")
-            Router.route(state.swarm_name, state.agent_name, String.to_atom(to), msg)
+            # Resolve to an existing agent only; drop (but still remove the file)
+            # if the target is unknown, so a junk "to" cannot mint atoms.
+            case SafeAtom.existing(to) do
+              nil ->
+                Logger.warning(
+                  "[#{state.swarm_name}/#{state.agent_name}] Outbox → unknown agent #{inspect(to)}, dropping"
+                )
+
+              to_atom ->
+                Logger.info("[#{state.swarm_name}/#{state.agent_name}] Outbox → #{to}")
+                Router.route(state.swarm_name, state.agent_name, to_atom, msg)
+            end
+
             File.rm(file_path)
 
           {:ok, %{"broadcast" => true, "content" => msg}} ->

@@ -17,6 +17,7 @@ defmodule Genswarms.Agents.AgentServer do
   alias Genswarms.Observability.LogStore
   alias Genswarms.Config.SwarmConfig
   alias Genswarms.Routing.Router
+  alias Genswarms.SafeAtom
 
   defstruct [
     :name,
@@ -565,6 +566,8 @@ defmodule Genswarms.Agents.AgentServer do
     end
   end
 
+  defp route_message(%{type: :send, to: nil}, _state), do: :ok
+
   defp route_message(%{type: :send, to: to, content: content}, state) do
     Router.route(state.swarm_name, state.name, to, content)
   end
@@ -589,8 +592,10 @@ defmodule Genswarms.Agents.AgentServer do
       {:agent_status, state.name, agent_state}
     )
 
-    # Return the new state to update - handled specially in handle_agent_output
-    {:update_state, String.to_atom(agent_state)}
+    # Return the new state to update - handled specially in handle_agent_output.
+    # Resolve to an existing atom only so a junk status string from agent output
+    # cannot mint atoms.
+    {:update_state, SafeAtom.existing(agent_state)}
   end
 
   defp route_message(_msg, _state), do: :ok

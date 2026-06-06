@@ -29,6 +29,7 @@ defmodule Genswarms.Objects.ObjectServer do
   alias Genswarms.Config.SwarmConfig
   alias Genswarms.Routing.Router
   alias Genswarms.Observability.LogStore
+  alias Genswarms.SafeAtom
 
   defstruct [
     :name,
@@ -662,12 +663,16 @@ defmodule Genswarms.Objects.ObjectServer do
     to = Map.get(response, "to")
     content = Map.get(response, "content", "")
 
-    case action do
-      "reply" when not is_nil(to) ->
-        route_message(state.swarm_name, state.name, String.to_atom(to), content)
+    # Resolve the target to an existing agent only — object backends are agent
+    # output too, so never mint an atom from a "to" field.
+    to_atom = SafeAtom.existing(to)
 
-      "send" when not is_nil(to) ->
-        route_message(state.swarm_name, state.name, String.to_atom(to), content)
+    case action do
+      "reply" when not is_nil(to_atom) ->
+        route_message(state.swarm_name, state.name, to_atom, content)
+
+      "send" when not is_nil(to_atom) ->
+        route_message(state.swarm_name, state.name, to_atom, content)
 
       "broadcast" ->
         Router.broadcast(state.swarm_name, state.name, content)

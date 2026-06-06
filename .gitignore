@@ -65,3 +65,6 @@ site/
 
 # MkDocs social plugin cache
 .cache/
+
+# ExUnit @tag :tmp_dir scratch space
+/tmp/

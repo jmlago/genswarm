@@ -16,6 +16,8 @@ defmodule Genswarms.Agents.AgentProtocol do
       {"type": "status", "state": "idle"}
   """
 
+  alias Genswarms.SafeAtom
+
   @type message_type ::
           :task | :message | :system | :output | :send | :broadcast | :status
 
@@ -113,11 +115,15 @@ defmodule Genswarms.Agents.AgentProtocol do
     # Pattern for: <<SWARM_MSG:BROADCAST:START>>\ncontent\n<<SWARM_MSG:END>>
     broadcast_pattern = ~r/<<SWARM_MSG:BROADCAST:START>>\n(.*?)<<SWARM_MSG:END>>/s
 
+    # Routing targets must name an existing agent: resolve to an existing atom
+    # only (never mint from agent output — a prompt-injected agent could emit
+    # unbounded distinct targets) and drop sends to unknown agents.
     send_messages =
       Regex.scan(send_pattern, output)
       |> Enum.map(fn [_full, target, content] ->
-        %{type: :send, to: String.to_atom(target), content: String.trim(content)}
+        %{type: :send, to: SafeAtom.existing(target), content: String.trim(content)}
       end)
+      |> Enum.reject(&is_nil(&1.to))
 
     broadcast_messages =
       Regex.scan(broadcast_pattern, output)
@@ -200,12 +206,16 @@ defmodule Genswarms.Agents.AgentProtocol do
 
   defp normalize_message(type, msg) do
     %{
-      type: String.to_atom(type),
+      # Unknown type from agent JSON: resolve to an existing atom or fall back to
+      # :unknown (non-routable) — never mint from untrusted output.
+      type: SafeAtom.existing(type) || :unknown,
       raw: msg
     }
   end
 
+  # Resolve a routing endpoint (from/to) to an existing atom only; unknown names
+  # become nil (the message is then dropped / treated as unroutable downstream).
   defp maybe_to_atom(nil), do: nil
-  defp maybe_to_atom(s) when is_binary(s), do: String.to_atom(s)
+  defp maybe_to_atom(s) when is_binary(s), do: SafeAtom.existing(s)
   defp maybe_to_atom(a) when is_atom(a), do: a
 end
