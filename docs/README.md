@@ -9,8 +9,8 @@ This is the documentation index. If you are new, start with
 
 ## Entry points
 
-- [`README.md`](../README.md) (repo root) — project overview and quick start.
-- [`SKILL.md`](../SKILL.md) (repo root) — the how-to-operate quick path for driving swarms via the `genswarms` CLI and REST API.
+- [`README.md`](https://github.com/genlayerlabs/genswarms#readme) (repo root) — project overview and quick start.
+- [`SKILL.md`](https://github.com/genlayerlabs/genswarms/blob/main/SKILL.md) (repo root) — the how-to-operate quick path for driving swarms via the `genswarms` CLI and REST API.
 - [Getting started](getting-started.md) — the full first-swarm walkthrough.
 
 ## Getting started

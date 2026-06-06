@@ -1,0 +1,53 @@
+/* GenSwarms docs — brand tuning to match the genswarms.com landing.
+   Palette: electric blue #1B4DFF, ink #101114, warm paper #FBFBF8. */
+
+[data-md-color-primary="custom"] {
+  --md-primary-fg-color:        #1B4DFF;
+  --md-primary-fg-color--light: #4f73ff;
+  --md-primary-fg-color--dark:  #1338cc;
+  --md-primary-bg-color:        #ffffff;
+  --md-primary-bg-color--light: rgba(255, 255, 255, 0.72);
+}
+
+[data-md-color-accent="custom"] {
+  --md-accent-fg-color:             #1338cc;
+  --md-accent-fg-color--transparent: rgba(27, 77, 255, 0.10);
+  --md-accent-bg-color:             #ffffff;
+  --md-accent-bg-color--light:      rgba(255, 255, 255, 0.72);
+}
+
+/* Light scheme: warm paper background like the landing */
+[data-md-color-scheme="default"] {
+  --md-default-bg-color: #FBFBF8;
+  --md-typeset-a-color:  #1338cc;
+}
+
+/* Dark scheme: align with the landing's near-black */
+[data-md-color-scheme="slate"] {
+  --md-default-bg-color:      #0B0C10;
+  --md-default-fg-color:      rgba(255, 255, 255, 0.88);
+  --md-code-bg-color:         #14161d;
+  --md-typeset-a-color:       #7f9cff;
+}
+
+/* Display font for headings, mirroring the marketing site's Bricolage Grotesque.
+   Loaded via Google Fonts in case Material's font pipeline doesn't include it. */
+@import url("https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700;12..96,800&display=swap");
+
+.md-typeset h1,
+.md-typeset h2,
+.md-typeset h3,
+.md-header__title,
+.md-nav__title {
+  font-family: "Bricolage Grotesque", "Instrument Sans", sans-serif;
+  letter-spacing: -0.02em;
+}
+
+.md-typeset h1 { font-weight: 800; }
+.md-typeset h2 { font-weight: 700; }
+
+/* Subtle, landing-consistent code blocks */
+.md-typeset pre > code { border-radius: 10px; }
+
+/* Tighten the header to feel a touch more bespoke */
+.md-header { box-shadow: 0 1px 0 rgba(0, 0, 0, 0.06); }

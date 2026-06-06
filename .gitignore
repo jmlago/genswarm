@@ -58,3 +58,7 @@ Thumbs.db
 # Release artifacts
 /rel
 .test-logs/
+
+# MkDocs / Pages build output
+_site/
+site/

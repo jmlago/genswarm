@@ -58,7 +58,7 @@ cp genswarms ~/.local/bin/          # user-local (ensure ~/.local/bin is on PATH
 
 Most CLI commands are also available through Mix as `mix genswarms.<cmd>`, if you
 prefer not to install the binary. The escript dispatches each command to a
-matching `Mix.Tasks.Genswarms.*` task (see [`lib/genswarms/cli.ex`](../lib/genswarms/cli.ex)).
+matching `Mix.Tasks.Genswarms.*` task (see [`lib/genswarms/cli.ex`](https://github.com/genlayerlabs/genswarms/blob/main/lib/genswarms/cli.ex)).
 
 For hyphenated commands the Mix task name uses an underscore, not a hyphen:
 
