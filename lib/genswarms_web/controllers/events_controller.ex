@@ -12,9 +12,10 @@ defmodule GenswarmsWeb.EventsController do
   alias Genswarms.Observability.EventStore
   alias Genswarms.SafeAtom
 
-  # Sentinel for an agent filter that names an unknown agent: no stored event can
-  # carry it, so the query returns empty rather than leaking all agents' events.
-  @unknown_agent :"$unknown_agent$"
+  # Sentinel for a filter value that resolves to no existing atom: no stored event
+  # can carry it, so the query returns empty rather than ignoring the filter (and
+  # leaking broader results) or raising. Used for agent/level/category/event_type.
+  @no_match :"$no_match$"
 
   @doc """
   Lists events with optional filtering.
@@ -86,21 +87,11 @@ defmodule GenswarmsWeb.EventsController do
   defp build_query_opts(params) do
     opts = []
 
-    opts =
-      if params["level"] do
-        level = String.to_existing_atom(params["level"])
-        Keyword.put(opts, :level, level)
-      else
-        opts
-      end
-
-    opts =
-      if params["category"] do
-        category = String.to_existing_atom(params["category"])
-        Keyword.put(opts, :category, category)
-      else
-        opts
-      end
+    # level/category resolve to existing atoms only — an unknown value yields the
+    # no-match sentinel (empty result) instead of raising ArgumentError -> HTTP
+    # 500, and never mints an atom.
+    opts = maybe_put_existing(opts, :level, params["level"])
+    opts = maybe_put_existing(opts, :category, params["category"])
 
     opts =
       if params["swarm"] do
@@ -109,19 +100,11 @@ defmodule GenswarmsWeb.EventsController do
         opts
       end
 
-    opts =
-      if params["agent"] do
-        # Resolve to an existing atom only (atom-exhaustion DoS guard). An
-        # unknown name becomes a sentinel that matches no event.
-        agent = SafeAtom.existing(params["agent"]) || @unknown_agent
-        Keyword.put(opts, :agent, agent)
-      else
-        opts
-      end
+    opts = maybe_put_existing(opts, :agent, params["agent"])
 
     opts =
       if params["event_type"] do
-        event_type = String.to_existing_atom(params["event_type"])
+        event_type = SafeAtom.existing(params["event_type"]) || @no_match
         Keyword.put(opts, :event_type, event_type)
       else
         opts
@@ -143,6 +126,15 @@ defmodule GenswarmsWeb.EventsController do
       end
 
     Keyword.put(opts, :limit, limit)
+  end
+
+  # Adds an atom-valued filter resolved to an existing atom only. nil param →
+  # filter omitted; unknown value → @no_match sentinel (empty result), never a
+  # newly minted atom.
+  defp maybe_put_existing(opts, _key, nil), do: opts
+
+  defp maybe_put_existing(opts, key, value) do
+    Keyword.put(opts, key, SafeAtom.existing(value) || @no_match)
   end
 
   # Format event for JSON response

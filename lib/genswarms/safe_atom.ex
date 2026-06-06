@@ -15,9 +15,13 @@ defmodule Genswarms.SafeAtom do
   result means "no such known name", which the caller maps to a 404, an empty
   result, or a non-match — never to a freshly minted atom.
 
-  Atom *creation* from operator-controlled input (loading a swarm config, adding
-  an agent) is bounded and intentional; those paths keep using
-  `String.to_atom/1`.
+  Atom *creation* is unavoidable when naming a genuinely new entity (loading a
+  swarm config, or adding an agent/object whose name does not yet exist). Those
+  paths still mint atoms, but only after the name passes a strict identifier +
+  length check (see `mint_name/1` in `GenswarmsWeb.SwarmController`), so a request
+  flood of junk/oversized names cannot exhaust the table. Bounding the *number*
+  of distinct valid names additionally requires an agent-count/resource cap
+  (tracked separately).
   """
 
   @doc """

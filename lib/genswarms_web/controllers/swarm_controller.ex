@@ -946,12 +946,16 @@ defmodule GenswarmsWeb.SwarmController do
     {opts, spec_params} = extract_topology_opts(params)
     spec = parse_agent_spec(spec_params)
 
-    case SwarmManager.add_agent(swarm, spec, Keyword.put(opts, :persist, true)) do
-      {:ok, name} ->
-        conn |> put_status(:created) |> json(%{status: "added", name: name})
+    if is_nil(spec.name) do
+      conn |> put_status(:bad_request) |> json(%{error: "Invalid or missing agent name"})
+    else
+      case SwarmManager.add_agent(swarm, spec, Keyword.put(opts, :persist, true)) do
+        {:ok, name} ->
+          conn |> put_status(:created) |> json(%{status: "added", name: name})
 
-      {:error, reason} ->
-        conn |> put_status(:bad_request) |> json(%{error: format_error(reason)})
+        {:error, reason} ->
+          conn |> put_status(:bad_request) |> json(%{error: format_error(reason)})
+      end
     end
   end
 
@@ -994,12 +998,16 @@ defmodule GenswarmsWeb.SwarmController do
     {opts, spec_params} = extract_topology_opts(params)
     spec = parse_object_spec(spec_params)
 
-    case SwarmManager.add_object(swarm, spec, Keyword.put(opts, :persist, true)) do
-      {:ok, name} ->
-        conn |> put_status(:created) |> json(%{status: "added", name: name})
+    if is_nil(spec.name) do
+      conn |> put_status(:bad_request) |> json(%{error: "Invalid or missing object name"})
+    else
+      case SwarmManager.add_object(swarm, spec, Keyword.put(opts, :persist, true)) do
+        {:ok, name} ->
+          conn |> put_status(:created) |> json(%{status: "added", name: name})
 
-      {:error, reason} ->
-        conn |> put_status(:bad_request) |> json(%{error: format_error(reason)})
+        {:error, reason} ->
+          conn |> put_status(:bad_request) |> json(%{error: format_error(reason)})
+      end
     end
   end
 
@@ -1080,16 +1088,18 @@ defmodule GenswarmsWeb.SwarmController do
   end
 
   defp extract_topology_opts(params) do
+    # connections/incoming name agents that already exist (they wire the new
+    # entity to them), so resolve to existing atoms only — never mint.
     connections =
       params
       |> Map.get("connections", [])
-      |> Enum.map(&safe_atom/1)
+      |> Enum.map(&SafeAtom.existing/1)
       |> Enum.reject(&is_nil/1)
 
     incoming =
       params
       |> Map.get("incoming", [])
-      |> Enum.map(&safe_atom/1)
+      |> Enum.map(&SafeAtom.existing/1)
       |> Enum.reject(&is_nil/1)
 
     {[connections: connections, incoming: incoming],
@@ -1098,19 +1108,21 @@ defmodule GenswarmsWeb.SwarmController do
 
   defp parse_agent_spec(params) do
     %{
-      name: safe_atom(params["name"]),
+      name: mint_name(params["name"]),
       backend: parse_backend(params["backend"]),
       skills: params["skills"] || [],
       model: params["model"],
       endpoint: params["endpoint"],
-      presets: (params["presets"] || []) |> Enum.map(&safe_atom/1),
+      # presets are a fixed, known set — resolve to existing atoms, drop unknowns.
+      presets:
+        (params["presets"] || []) |> Enum.map(&SafeAtom.existing/1) |> Enum.reject(&is_nil/1),
       config: params["config"] || %{}
     }
   end
 
   defp parse_object_spec(params) do
     %{
-      name: safe_atom(params["name"]),
+      name: mint_name(params["name"]),
       handler: safe_module(params["handler"]),
       backend: parse_backend(params["backend"]),
       config: params["config"] || %{}
@@ -1118,24 +1130,33 @@ defmodule GenswarmsWeb.SwarmController do
   end
 
   defp parse_backend(nil), do: nil
-  defp parse_backend(b) when is_binary(b), do: safe_atom(b)
+  defp parse_backend(b) when is_binary(b), do: SafeAtom.existing(b)
   defp parse_backend(%{"type" => "docker", "image" => img}), do: {:docker, img}
   defp parse_backend(%{"type" => "ssh", "host" => host}), do: {:ssh, host}
   defp parse_backend(%{"type" => "mock"}), do: :mock
   defp parse_backend(%{"type" => "bwrap", "opts" => opts}), do: {:bwrap, opts}
-  defp parse_backend(%{"type" => t}), do: safe_atom(t)
+  defp parse_backend(%{"type" => t}), do: SafeAtom.existing(t)
   defp parse_backend(other), do: other
 
-  defp safe_atom(nil), do: nil
-  defp safe_atom(a) when is_atom(a), do: a
+  # A NEW agent/object name legitimately needs a freshly interned atom — but only
+  # for a valid, length-bounded identifier. Gating atom creation this way stops a
+  # flood of distinct junk/oversized names on the mutation endpoints from
+  # exhausting the (never-GC'd) atom table. Invalid names return nil, which the
+  # add_agent/add_object actions reject with 400.
+  @entity_name_regex ~r/\A[a-zA-Z][a-zA-Z0-9_-]*\z/
+  @max_entity_name_length 64
 
-  defp safe_atom(s) when is_binary(s) do
-    try do
-      String.to_existing_atom(s)
-    rescue
-      ArgumentError -> String.to_atom(s)
+  defp mint_name(name) when is_atom(name), do: name
+
+  defp mint_name(name) when is_binary(name) do
+    if byte_size(name) <= @max_entity_name_length and String.match?(name, @entity_name_regex) do
+      String.to_atom(name)
+    else
+      nil
     end
   end
+
+  defp mint_name(_), do: nil
 
   defp safe_module(nil), do: nil
   defp safe_module(m) when is_atom(m), do: m
