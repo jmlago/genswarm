@@ -20,25 +20,18 @@ defmodule Genswarms.Agents.AgentProtocolTest do
       assert decoded["from"] == "coordinator"
     end
 
-    # Regression: the agent runtime reads stdin line-by-line and runs one turn
-    # per physical line. A multi-line task must therefore arrive as ONE line —
-    # its newlines escaped to literal "\n" — or it fans out into one reply per
-    # line (the restart-flood bug). subzeroclaw's unescape_turn restores them.
-    test "escapes newlines so a multi-line task stays one physical line" do
-      json = AgentProtocol.encode_task("line1\nline2\nline3")
-      content = Jason.decode!(json)["content"]
-
-      refute content =~ "\n"
-      assert content == "line1\\nline2\\nline3"
+    # Turn framing is the driver's job (NUL delimiter on the wire + subzeroclaw's
+    # read_turn), NOT the encoder's: content travels VERBATIM. A multi-line task
+    # must round-trip through encode/decode unchanged — no escaping, no mangling
+    # of backslashes (which would corrupt code/JSON/regex/paths).
+    test "encodes multi-line content verbatim (no escaping)" do
+      content = Jason.decode!(AgentProtocol.encode_task("line1\nline2\nline3"))["content"]
+      assert content == "line1\nline2\nline3"
     end
 
-    test "escapes backslashes so the escaping round-trips losslessly" do
-      # user literally typed "a\nb" (backslash, n) — must survive, NOT become a newline
-      json = AgentProtocol.encode_task("a\\nb")
-      content = Jason.decode!(json)["content"]
-
-      refute content =~ "\n"
-      assert content == "a\\\\nb"
+    test "passes backslashes through verbatim" do
+      content = Jason.decode!(AgentProtocol.encode_task("a\\nb path C:\\x"))["content"]
+      assert content == "a\\nb path C:\\x"
     end
 
     test "leaves single-line content untouched" do

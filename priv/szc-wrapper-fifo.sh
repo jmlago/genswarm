@@ -67,19 +67,23 @@ exec 3>"$INPUT_FIFO"
 # Process stdin (JSON from orchestrator) and send to subzeroclaw
 while IFS= read -r line; do
     msg_type=$(echo "$line" | jq -r '.type // empty' 2>/dev/null)
+    # Frame each turn with a trailing NUL byte (printf '%s\0'), not a newline:
+    # subzeroclaw reads a piped (non-tty) turn up to the NUL, so a multi-line
+    # message stays ONE turn instead of fanning out into one turn per line. No
+    # escaping — content passes verbatim. (See subzeroclaw read_turn().)
     case "$msg_type" in
         "task"|"message")
             from=$(echo "$line" | jq -r '.from // "orchestrator"')
             content=$(echo "$line" | jq -r '.content // ""')
-            echo "[From $from] $content" >&3
+            printf '%s\0' "[From $from] $content" >&3
             ;;
         "system")
             cmd=$(echo "$line" | jq -r '.command // ""')
-            echo "/$cmd" >&3
+            printf '%s\0' "/$cmd" >&3
             ;;
         *)
             # Pass through as-is
-            echo "$line" >&3
+            printf '%s\0' "$line" >&3
             ;;
     esac
 done

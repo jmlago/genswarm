@@ -44,24 +44,27 @@ process_input() {
         # Try to parse as JSON and translate
         type=$(echo "$line" | jq -r '.type // empty' 2>/dev/null)
 
+        # Frame each turn with a trailing NUL byte (printf '%s\0'), not a newline,
+        # so subzeroclaw reads a piped turn up to the NUL and a multi-line message
+        # stays ONE turn (content verbatim, no escaping). See subzeroclaw read_turn().
         case "$type" in
             "task")
                 from=$(echo "$line" | jq -r '.from // "orchestrator"')
                 content=$(echo "$line" | jq -r '.content // ""')
-                echo "[From $from] $content"
+                printf '%s\0' "[From $from] $content"
                 ;;
             "message")
                 from=$(echo "$line" | jq -r '.from // "unknown"')
                 content=$(echo "$line" | jq -r '.content // ""')
-                echo "[From $from] $content"
+                printf '%s\0' "[From $from] $content"
                 ;;
             "system")
                 cmd=$(echo "$line" | jq -r '.command // ""')
-                echo "/$cmd"
+                printf '%s\0' "/$cmd"
                 ;;
             *)
                 # Not JSON or unknown type, pass through
-                echo "$line"
+                printf '%s\0' "$line"
                 ;;
         esac
     done > "$INPUT_PIPE"
