@@ -30,9 +30,10 @@ defmodule Genswarms.Backends.DockerBackend do
   @behaviour Genswarms.Backends.BackendBehaviour
 
   require Logger
+  alias Genswarms.Backends.EgressGuard
   alias Genswarms.Observability.LogStore
 
-  defstruct [:port, :container_name, :container_id, :name, :skills_dir, :image, :buffer]
+  defstruct [:port, :container_name, :container_id, :name, :skills_dir, :image, :egress, :buffer]
 
   @type t :: %__MODULE__{
           port: port() | nil,
@@ -41,6 +42,7 @@ defmodule Genswarms.Backends.DockerBackend do
           name: String.t(),
           skills_dir: String.t() | nil,
           image: String.t(),
+          egress: EgressGuard.t() | nil,
           buffer: binary()
         }
 
@@ -134,71 +136,119 @@ defmodule Genswarms.Backends.DockerBackend do
     # Ensure image exists (build if needed)
     ensure_image_exists(image, config)
 
-    # Build docker run command
-    cmd =
-      build_docker_command(
-        container_name,
-        image,
-        skills_dir,
-        api_key,
-        model,
-        endpoint,
-        name,
+    # Network isolation (network: :isolated): give the agent a per-container
+    # workspace (the default workspace is shared, which would collide sockets),
+    # then start the egress forwarder before `docker run` so the socket/.curlrc
+    # exist when the agent first calls the LLM.
+    isolated = EgressGuard.isolated?(config)
+
+    config =
+      if isolated do
+        ws = Map.get(config, :workspace) || Path.join("/tmp/szc-workspace", container_name)
+        File.mkdir_p!(ws)
+        Map.put(config, :workspace, ws)
+      else
         config
-      )
+      end
 
-    Logger.info("Starting NixOS Docker container for agent #{name}: #{container_name}")
-    Logger.info("Docker command: #{cmd}")
+    egress_result =
+      if isolated do
+        EgressGuard.start_forwarder(Map.fetch!(config, :workspace), config)
+      else
+        {:ok, nil}
+      end
 
-    port_opts = [
-      :binary,
-      :exit_status,
-      {:line, 16_384},
-      :use_stdio,
-      :stderr_to_stdout
-    ]
+    with {:ok, egress} <- egress_result do
+      # Build docker run command
+      cmd =
+        build_docker_command(
+          container_name,
+          image,
+          skills_dir,
+          api_key,
+          model,
+          endpoint,
+          name,
+          config
+        )
 
-    try do
-      port = Port.open({:spawn, cmd}, port_opts)
+      Logger.info("Starting NixOS Docker container for agent #{name}: #{container_name}")
+      Logger.info("Docker command: #{cmd}")
 
-      ref = %__MODULE__{
-        port: port,
-        container_name: container_name,
-        name: name,
-        skills_dir: skills_dir,
-        image: image,
-        buffer: ""
-      }
+      port_opts = [
+        :binary,
+        :exit_status,
+        {:line, 16_384},
+        :use_stdio,
+        :stderr_to_stdout
+      ]
 
-      Logger.info("Started NixOS container #{container_name} (#{image}) for agent #{name}")
+      try do
+        port = Port.open({:spawn, cmd}, port_opts)
 
-      LogStore.log(:info, :backend, :docker_start, "Started container #{container_name}",
-        swarm: swarm_name,
-        agent: String.to_atom(name),
-        metadata: %{image: image, container: container_name}
-      )
+        ref = %__MODULE__{
+          port: port,
+          container_name: container_name,
+          name: name,
+          skills_dir: skills_dir,
+          image: image,
+          egress: egress,
+          buffer: ""
+        }
 
-      {:ok, ref}
-    rescue
-      e ->
-        Logger.error("Failed to start Docker container for agent #{name}: #{inspect(e)}")
+        Logger.info("Started NixOS container #{container_name} (#{image}) for agent #{name}")
+
+        LogStore.log(:info, :backend, :docker_start, "Started container #{container_name}",
+          swarm: swarm_name,
+          agent: String.to_atom(name),
+          metadata: %{image: image, container: container_name}
+        )
+
+        {:ok, ref}
+      rescue
+        e ->
+          EgressGuard.stop_forwarder(egress)
+          Logger.error("Failed to start Docker container for agent #{name}: #{inspect(e)}")
+
+          LogStore.log(
+            :error,
+            :backend,
+            :docker_start_failed,
+            "Failed to start container: #{inspect(e)}",
+            swarm: swarm_name,
+            agent: String.to_atom(name),
+            metadata: %{image: image, container: container_name, error: inspect(e), cmd: cmd}
+          )
+
+          {:error, {:start_failed, e}}
+      end
+    else
+      {:error, reason} ->
+        # Egress forwarder failed (e.g. endpoint not allowlisted): do not run an
+        # "isolated" container that would actually have no network.
+        Logger.error("Egress forwarder failed for agent #{name}: #{inspect(reason)}")
 
         LogStore.log(
           :error,
           :backend,
-          :docker_start_failed,
-          "Failed to start container: #{inspect(e)}",
+          :docker_egress_failed,
+          "Failed to start egress forwarder: #{inspect(reason)}",
           swarm: swarm_name,
           agent: String.to_atom(name),
-          metadata: %{image: image, container: container_name, error: inspect(e), cmd: cmd}
+          metadata: %{container: container_name, reason: inspect(reason)}
         )
 
-        {:error, {:start_failed, e}}
+        {:error, {:egress_failed, reason}}
     end
   end
 
   @impl true
-  def stop(%__MODULE__{port: port, container_name: container_name, name: name}) do
+  def stop(%__MODULE__{
+        port: port,
+        container_name: container_name,
+        egress: egress,
+        name: name
+      }) do
     Logger.info("Stopping Docker container #{container_name} for agent #{name}")
 
     # Capture container logs before stopping
@@ -215,6 +265,9 @@ defmodule Genswarms.Backends.DockerBackend do
         _ -> :ok
       end
     end
+
+    # Stop the egress forwarder (isolated agents) and remove its socket
+    EgressGuard.stop_forwarder(egress)
 
     System.cmd("docker", ["stop", container_name], stderr_to_stdout: true)
     System.cmd("docker", ["rm", "-f", container_name], stderr_to_stdout: true)
@@ -378,16 +431,19 @@ defmodule Genswarms.Backends.DockerBackend do
     Application.get_env(:genswarms, :project_root, ".")
   end
 
-  defp build_docker_command(
-         container_name,
-         image,
-         skills_dir,
-         api_key,
-         model,
-         endpoint,
-         agent_name,
-         config
-       ) do
+  @doc false
+  # Exposed for tests: builds the full `docker run` command string. Pure given
+  # its inputs (no docker invocation).
+  def build_docker_command(
+        container_name,
+        image,
+        skills_dir,
+        api_key,
+        model,
+        endpoint,
+        agent_name,
+        config
+      ) do
     base_args = [
       "docker",
       "run",
@@ -429,6 +485,12 @@ defmodule Genswarms.Backends.DockerBackend do
     envs = if api_key, do: envs ++ [{"-e", "SUBZEROCLAW_API_KEY='#{api_key}'"}], else: envs
     envs = if model, do: envs ++ [{"-e", "SUBZEROCLAW_MODEL='#{model}'"}], else: envs
     envs = if endpoint, do: envs ++ [{"-e", "SUBZEROCLAW_ENDPOINT='#{endpoint}'"}], else: envs
+
+    # Isolation: route the agent's curl through the bind-mounted LLM socket.
+    envs =
+      if EgressGuard.isolated?(config),
+        do: envs ++ [{"-e", "CURL_HOME=/workspace"}],
+        else: envs
 
     # Add topology connections so swarm-msg list works inside containers
     envs =
@@ -551,9 +613,16 @@ defmodule Genswarms.Backends.DockerBackend do
   end
 
   defp build_network_args(config) do
-    case Map.get(config, :network) do
-      nil -> []
-      network -> ["--network", network]
+    cond do
+      # Isolation: no network at all. Egress is the bind-mounted LLM socket only.
+      EgressGuard.isolated?(config) ->
+        ["--network", "none"]
+
+      true ->
+        case Map.get(config, :network) do
+          nil -> []
+          network -> ["--network", to_string(network)]
+        end
     end
   end
 
