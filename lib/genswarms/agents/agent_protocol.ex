@@ -40,7 +40,7 @@ defmodule Genswarms.Agents.AgentProtocol do
   def encode_task(content, from \\ "orchestrator") do
     Jason.encode!(%{
       type: "task",
-      content: content,
+      content: escape_turn(content),
       from: from
     })
   end
@@ -52,9 +52,26 @@ defmodule Genswarms.Agents.AgentProtocol do
   def encode_message(content, from) do
     Jason.encode!(%{
       type: "message",
-      content: content,
+      content: escape_turn(content),
       from: to_string(from)
     })
+  end
+
+  # One agent-bound message MUST reach the agent as exactly one turn. The
+  # subzeroclaw runtime reads its stdin line-by-line and runs a full agentic
+  # turn (LLM call + reply) per physical line, and the szc-wrapper expands a
+  # JSON `content` field's newlines back into real newlines before feeding it in.
+  # So a multi-line task/message (e.g. a conversation-rehydration preamble, or a
+  # multi-line policy reply) would otherwise fan out into one reply PER LINE —
+  # the restart-flood bug. We escape embedded newlines here (backslash -> "\\",
+  # newline -> "\n") so the message stays a single physical line all the way to
+  # the agent; subzeroclaw's `unescape_turn` restores the real newlines before
+  # running the turn. Single-line messages are unaffected (no newlines to escape).
+  defp escape_turn(content) do
+    content
+    |> to_string()
+    |> String.replace("\\", "\\\\")
+    |> String.replace("\n", "\\n")
   end
 
   @doc """
