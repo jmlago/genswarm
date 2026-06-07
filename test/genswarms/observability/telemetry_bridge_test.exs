@@ -80,6 +80,21 @@ defmodule Genswarms.Observability.TelemetryBridgeTest do
     assert event.message == "message routed researcher → coder"
   end
 
+  test "a struct (DateTime) in metadata is rendered opaque, not dropped (regression)" do
+    # DateTime is a map but not Enumerable; the generic map sanitizer's Map.new/2
+    # used to raise Protocol.UndefinedError and the whole event was dropped.
+    ts = ~U[2026-06-07 09:30:28Z]
+
+    :telemetry.execute(
+      [:genswarms, :router, :message_routed],
+      %{},
+      %{swarm: "s_dt", from: :researcher, to: :coder, at: ts}
+    )
+
+    assert_receive {:log_event, %{swarm: "s_dt"} = event}, 1_000
+    assert event.metadata.at == inspect(ts)
+  end
+
   test "swarm/agent/object keys are not duplicated inside the metadata blob" do
     :telemetry.execute(
       [:genswarms, :object, :object_started],

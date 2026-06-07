@@ -132,6 +132,12 @@ defmodule Genswarms.Observability.TelemetryBridge do
   defp sanitize_value(v) when is_atom(v), do: v
   defp sanitize_value(v) when is_list(v), do: Enum.map(v, &sanitize_value/1)
 
+  # Structs (DateTime, Time, custom structs, …) are maps but do NOT implement
+  # Enumerable, so the generic map clause's Map.new/2 would raise
+  # Protocol.UndefinedError and the whole event would be dropped. Render them
+  # opaque instead. (This clause MUST precede the is_map/1 clause.)
+  defp sanitize_value(%_{} = v), do: inspect(v)
+
   defp sanitize_value(v) when is_map(v),
     do: Map.new(v, fn {k, val} -> {k, sanitize_value(val)} end)
 
