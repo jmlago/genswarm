@@ -391,15 +391,14 @@ defmodule Genswarms.SwarmManager do
         {:reply, {:error, :swarm_not_found}, state}
 
       swarm_info ->
-        case do_add_agent(swarm_name, swarm_info, spec, opts) do
-          {:ok, name, new_info} ->
-            new_state = put_swarm(state, swarm_name, new_info)
-            maybe_persist(opts, swarm_name, :add_agent, normalize_spec_for_overlay(spec, opts))
-            broadcast_topology_changed(swarm_name)
-            {:reply, {:ok, name}, new_state}
-
-          {:error, _} = err ->
-            {:reply, err, state}
+        with :ok <- Genswarms.IR.Gate.validate_add_agent(swarm_info.config, spec),
+             {:ok, name, new_info} <- do_add_agent(swarm_name, swarm_info, spec, opts) do
+          new_state = put_swarm(state, swarm_name, new_info)
+          maybe_persist(opts, swarm_name, :add_agent, normalize_spec_for_overlay(spec, opts))
+          broadcast_topology_changed(swarm_name)
+          {:reply, {:ok, name}, new_state}
+        else
+          {:error, _} = err -> {:reply, err, state}
         end
     end
   end
@@ -519,20 +518,20 @@ defmodule Genswarms.SwarmManager do
         {:reply, {:error, :swarm_not_found}, state}
 
       swarm_info ->
-        case do_scale_agent_group(swarm_name, swarm_info, base_name, target_count, opts) do
-          {:ok, result, new_info} ->
-            new_state = put_swarm(state, swarm_name, new_info)
+        with :ok <- Genswarms.IR.Gate.validate_scale(swarm_info.config, base_name, target_count),
+             {:ok, result, new_info} <-
+               do_scale_agent_group(swarm_name, swarm_info, base_name, target_count, opts) do
+          new_state = put_swarm(state, swarm_name, new_info)
 
-            maybe_persist(opts, swarm_name, :scale_agent_group, %{
-              base_name: base_name,
-              target_count: target_count
-            })
+          maybe_persist(opts, swarm_name, :scale_agent_group, %{
+            base_name: base_name,
+            target_count: target_count
+          })
 
-            broadcast_topology_changed(swarm_name)
-            {:reply, {:ok, result}, new_state}
-
-          {:error, _} = err ->
-            {:reply, err, state}
+          broadcast_topology_changed(swarm_name)
+          {:reply, {:ok, result}, new_state}
+        else
+          {:error, _} = err -> {:reply, err, state}
         end
     end
   end
@@ -542,6 +541,25 @@ defmodule Genswarms.SwarmManager do
   defp do_start_swarm(config, config_path, state) do
     swarm_name = config.name
 
+    case Genswarms.IR.Gate.validate_start(config) do
+      {:error, reason} ->
+        LogStore.log(
+          :error,
+          :swarm,
+          :ir_validation_failed,
+          "Refusing to start swarm '#{swarm_name}': IR validation failed",
+          swarm: swarm_name,
+          metadata: %{config_path: config_path, reason: inspect(reason)}
+        )
+
+        {:reply, {:error, reason}, state}
+
+      :ok ->
+        start_validated_swarm(config, config_path, state, swarm_name)
+    end
+  end
+
+  defp start_validated_swarm(config, config_path, state, swarm_name) do
     if Map.has_key?(state.swarms, swarm_name) do
       LogStore.log(
         :error,
