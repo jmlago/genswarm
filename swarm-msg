@@ -101,20 +101,29 @@ $(cat "$file")"
     fi
 
     # Write to outbox
-    outbox_dir="/workspace/.outbox"
+    outbox_dir="${OUTBOX_DIR:-/workspace/.outbox}"
     mkdir -p "$outbox_dir"
+    # seq is an ordering hint only; a unique suffix (PID + nanosecond time)
+    # prevents the filename collision/overwrite that the racy count-based seq
+    # alone caused when two sends ran concurrently.
     seq=$(ls "$outbox_dir"/*.json 2>/dev/null | wc -l)
     seq=$((seq + 1))
-    filename=$(printf "%04d_%s.json" "$seq" "$to")
+    uniq="$$_$(date +%s%N 2>/dev/null || date +%s)"
+    filename=$(printf "%04d_%s_%s.json" "$seq" "$to" "$uniq")
 
-    # JSON-encode the content safely
-    encoded=$(printf '%s' "$content" | jq -Rs . 2>/dev/null)
+    # JSON-encode the content safely. `|| true` keeps a missing/failing jq from
+    # aborting the script under `set -e` so the sed fallback below can run.
+    encoded=$(printf '%s' "$content" | jq -Rs . 2>/dev/null) || true
     if [ -z "$encoded" ]; then
         # Fallback: escape with sed
         encoded="\"$(printf '%s' "$content" | sed 's/\\/\\\\/g; s/"/\\"/g; s/	/\\t/g' | awk '{printf "%s\\n", $0}' | sed 's/\\n$//')\""
     fi
 
-    printf '{"to":"%s","content":%s}\n' "$to" "$encoded" > "$outbox_dir/$filename"
+    # Write to a temp name (not *.json, so the watcher skips it) then atomically
+    # rename into place — the watcher never reads a half-written file.
+    tmpfile="$outbox_dir/.tmp_${uniq}"
+    printf '{"to":"%s","content":%s}\n' "$to" "$encoded" > "$tmpfile"
+    mv -f "$tmpfile" "$outbox_dir/$filename"
 }
 
 broadcast_message() {
@@ -124,18 +133,25 @@ broadcast_message() {
         exit 1
     fi
 
-    outbox_dir="/workspace/.outbox"
+    outbox_dir="${OUTBOX_DIR:-/workspace/.outbox}"
     mkdir -p "$outbox_dir"
     seq=$(ls "$outbox_dir"/*.json 2>/dev/null | wc -l)
     seq=$((seq + 1))
-    filename=$(printf "%04d_broadcast.json" "$seq")
+    uniq="$$_$(date +%s%N 2>/dev/null || date +%s)"
+    filename=$(printf "%04d_broadcast_%s.json" "$seq" "$uniq")
 
-    encoded=$(printf '%s' "$message" | python3 -c 'import sys,json; print(json.dumps(sys.stdin.read()))' 2>/dev/null)
+    # `|| true`: a missing/failing python3 must not abort the script under
+    # `set -e`; the sed fallback below handles the encoding.
+    encoded=$(printf '%s' "$message" | python3 -c 'import sys,json; print(json.dumps(sys.stdin.read()))' 2>/dev/null) || true
     if [ -z "$encoded" ]; then
         encoded="\"$(printf '%s' "$message" | sed 's/\\/\\\\/g; s/"/\\"/g' | tr '\n' ' ')\""
     fi
 
-    printf '{"broadcast":true,"content":%s}\n' "$encoded" > "$outbox_dir/$filename"
+    # Temp name then atomic rename (see send_message) — unique suffix avoids the
+    # racy-seq collision; the watcher only reads the final *.json.
+    tmpfile="$outbox_dir/.tmp_${uniq}"
+    printf '{"broadcast":true,"content":%s}\n' "$encoded" > "$tmpfile"
+    mv -f "$tmpfile" "$outbox_dir/$filename"
 }
 
 # Legacy stdout protocol (kept for backward compatibility)

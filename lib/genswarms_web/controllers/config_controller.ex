@@ -65,30 +65,32 @@ defmodule GenswarmsWeb.ConfigController do
   end
 
   def validate(conn, %{"content" => content, "format" => format}) do
-    format_atom =
-      case format do
-        "exs" -> :exs
-        "json" -> :json
-        "yaml" -> :yaml
-        "yml" -> :yaml
-        _ -> :exs
-      end
+    # Only data formats are accepted as request content. Executable .exs is never
+    # evaluated from a request body (that would be RCE); load trusted .exs via
+    # config_path on the server instead.
+    case normalize_content_format(format) do
+      {:ok, format_atom} ->
+        case Loader.load_string(content, format_atom) do
+          {:ok, parsed} ->
+            json(conn, %{valid: true, format: format, config: summarize_config(parsed)})
 
-    case Loader.load_string(content, format_atom) do
-      {:ok, parsed} ->
-        json(conn, %{
-          valid: true,
-          format: format,
-          config: summarize_config(parsed)
-        })
+          {:error, reason} ->
+            conn
+            |> put_status(:bad_request)
+            |> json(%{valid: false, format: format, errors: format_validation_errors(reason)})
+        end
 
-      {:error, reason} ->
+      :error ->
         conn
         |> put_status(:bad_request)
         |> json(%{
           valid: false,
           format: format,
-          errors: format_validation_errors(reason)
+          errors: [
+            "Unsupported content format '#{format}'. Use 'json' or 'yaml'. " <>
+              "Executable .exs configs are not accepted as request content; " <>
+              "load a trusted .exs file via 'config_path' on the server instead."
+          ]
         })
     end
   end
@@ -107,6 +109,12 @@ defmodule GenswarmsWeb.ConfigController do
   end
 
   # Private helpers
+
+  # Request content may only be data formats; .exs (executable) is rejected.
+  defp normalize_content_format("json"), do: {:ok, :json}
+  defp normalize_content_format("yaml"), do: {:ok, :yaml}
+  defp normalize_content_format("yml"), do: {:ok, :yaml}
+  defp normalize_content_format(_), do: :error
 
   defp summarize_config(config) do
     %{
@@ -166,6 +174,10 @@ defmodule GenswarmsWeb.ConfigController do
 
   defp format_validation_errors({:unsupported_format, ext}) do
     ["Unsupported file format: #{ext}"]
+  end
+
+  defp format_validation_errors(:exs_string_not_supported) do
+    ["Executable .exs configs are not accepted as request content; use json/yaml or a server-side config_path."]
   end
 
   defp format_validation_errors(reason) when is_binary(reason) do

@@ -42,16 +42,27 @@ defmodule GenswarmsWeb.SwarmController do
   end
 
   def create(conn, %{"config_path" => path}) do
-    case SwarmManager.start_swarm(path) do
-      {:ok, swarm_name} ->
-        conn
-        |> put_status(:created)
-        |> json(%{status: "created", swarm_name: swarm_name})
+    # config_path is attacker-controlled and gets loaded (and, for .exs,
+    # evaluated). Restrict it to the allowed config directory so it cannot read
+    # or execute arbitrary files on the host.
+    case Genswarms.Config.PathGuard.safe_config_path(path) do
+      {:ok, safe_path} ->
+        case SwarmManager.start_swarm(safe_path) do
+          {:ok, swarm_name} ->
+            conn
+            |> put_status(:created)
+            |> json(%{status: "created", swarm_name: swarm_name})
 
-      {:error, reason} ->
+          {:error, reason} ->
+            conn
+            |> put_status(:bad_request)
+            |> json(%{error: format_error(reason)})
+        end
+
+      {:error, _reason} ->
         conn
         |> put_status(:bad_request)
-        |> json(%{error: format_error(reason)})
+        |> json(%{error: "Invalid config_path"})
     end
   end
 
@@ -597,6 +608,11 @@ defmodule GenswarmsWeb.SwarmController do
     case AgentServer.update_skill(swarm_name, agent_name_atom, skill_name, content) do
       :ok ->
         json(conn, %{status: "updated", skill: skill_name})
+
+      {:error, :invalid_skill_name} ->
+        conn
+        |> put_status(:bad_request)
+        |> json(%{error: "Invalid skill name"})
 
       {:error, reason} ->
         conn
