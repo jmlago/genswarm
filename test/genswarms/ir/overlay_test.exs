@@ -133,10 +133,14 @@ defmodule Genswarms.IR.OverlayTest do
       assert {:error, {:unknown_op, "drop_database"}} = Overlay.parse(doc)
     end
 
-    test "op strings resolve to a fixed atom set (no minting)" do
-      before = :erlang.system_info(:atom_count)
-      for n <- 1..200, do: Overlay.parse(put_event(valid_doc(), 0, "op", "ghost_#{n}"))
-      assert :erlang.system_info(:atom_count) == before
+    test "unknown op strings are never interned as atoms" do
+      # Deterministic (concurrency-safe): if parsing minted an atom for the op
+      # string, String.to_existing_atom/1 would stop raising for it.
+      for n <- 1..200 do
+        op = "ghost_op_#{n}"
+        assert {:error, {:unknown_op, ^op}} = Overlay.parse(put_event(valid_doc(), 0, "op", op))
+        assert_raise ArgumentError, fn -> String.to_existing_atom(op) end
+      end
     end
   end
 
