@@ -48,10 +48,13 @@ defmodule Genswarms.Backends.LocalBackend do
       :stderr_to_stdout
     ]
 
-    cmd = build_command(wrapper_path, subzeroclaw_path, name, skills_dir)
+    args = build_args(name, subzeroclaw_path, skills_dir)
 
     try do
-      port = Port.open({:spawn, cmd}, port_opts)
+      # spawn_executable + :args passes argv directly (no /bin/sh), so agent
+      # names / paths cannot be interpreted as shell commands. Using {:spawn, str}
+      # here would run the string through "/bin/sh -c" (command injection).
+      port = Port.open({:spawn_executable, wrapper_path}, [{:args, args} | port_opts])
 
       ref = %__MODULE__{
         port: port,
@@ -137,9 +140,13 @@ defmodule Genswarms.Backends.LocalBackend do
       Application.get_env(:genswarms, :subzeroclaw_path, "subzeroclaw")
   end
 
-  defp build_command(wrapper_path, subzeroclaw_path, name, skills_dir) do
+  # argv list passed to the wrapper: <agent_name> <subzeroclaw_path> [skills_dir].
+  # Returned as a list (not a joined string) so Port spawn_executable hands them
+  # to execvp directly and no shell metacharacter interpretation can occur.
+  @doc false
+  def build_args(name, subzeroclaw_path, skills_dir) do
     skills_arg = if skills_dir, do: skills_dir, else: ""
-    "#{wrapper_path} #{name} #{subzeroclaw_path} #{skills_arg}"
+    [to_string(name), to_string(subzeroclaw_path), to_string(skills_arg)]
   end
 
   defp maybe_add_skills_env(nil), do: []

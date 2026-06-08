@@ -609,6 +609,11 @@ defmodule GenswarmsWeb.SwarmController do
       :ok ->
         json(conn, %{status: "updated", skill: skill_name})
 
+      {:error, :invalid_skill_name} ->
+        conn
+        |> put_status(:bad_request)
+        |> json(%{error: "Invalid skill name"})
+
       {:error, reason} ->
         conn
         |> put_status(:internal_server_error)
