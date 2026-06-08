@@ -26,8 +26,7 @@ defmodule Genswarms.Agents.LogWatcher do
       agent_name: agent_name,
       log_dir: log_dir,
       workspace: workspace,
-      last_positions: %{},
-      processed_hashes: MapSet.new()
+      last_positions: %{}
     }
 
     Process.send_after(self(), :poll, @poll_interval)
@@ -65,30 +64,17 @@ defmodule Genswarms.Agents.LogWatcher do
             # Parse and log conversation entries
             log_conversation_entries(new_content, state)
 
-            # Parse swarm messages for routing
+            # Parse swarm messages for routing.
             messages = parse_swarm_messages(new_content)
 
-            # Route all messages - deduplication is handled by position tracking
-            # (we only read new content since last_pos, so no duplicates)
-            # Include file position in hash to allow identical messages at different positions
-            new_hashes =
-              Enum.with_index(messages)
-              |> Enum.reduce(state.processed_hashes, fn {msg, idx}, acc ->
-                # Hash includes file position and index to distinguish identical messages
-                hash = :erlang.phash2({file_path, last_pos, idx, msg})
+            # Deduplication is already handled by position tracking — we only
+            # ever read content past last_pos, so each message is seen once. The
+            # old per-message hash set was redundant and grew without bound
+            # (keyed on file position + index, so entries never collided) — an
+            # unbounded per-agent memory leak (audit finding 32). Just route.
+            Enum.each(messages, fn msg -> route_message(msg, state) end)
 
-                unless MapSet.member?(acc, hash) do
-                  route_message(msg, state)
-                end
-
-                MapSet.put(acc, hash)
-              end)
-
-            %{
-              state
-              | last_positions: Map.put(state.last_positions, file_path, size),
-                processed_hashes: new_hashes
-            }
+            %{state | last_positions: Map.put(state.last_positions, file_path, size)}
 
           {:error, _} ->
             state
