@@ -30,4 +30,8 @@ end
 config :genswarms,
   subzeroclaw_path: System.get_env("SUBZEROCLAW_PATH", "subzeroclaw"),
   swarm_data_dir: System.get_env("SWARM_DATA_DIR", "~/.subzeroclaw/swarms"),
-  skills_dir: System.get_env("SKILLS_DIR", "priv/skills")
+  skills_dir: System.get_env("SKILLS_DIR", "priv/skills"),
+  # API auth token. When set, every REST/WebSocket request must present
+  # `Authorization: Bearer <token>`. When unset, only loopback callers are
+  # allowed (see Genswarms.Auth). The CLI sends this token automatically.
+  api_token: System.get_env("GENSWARMS_API_TOKEN")

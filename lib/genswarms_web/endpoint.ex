@@ -1,9 +1,11 @@
 defmodule GenswarmsWeb.Endpoint do
   use Phoenix.Endpoint, otp_app: :genswarms
 
-  # WebSocket for real-time swarm communication
+  # WebSocket for real-time swarm communication.
+  # connect_info exposes the peer IP and request headers so SwarmSocket can apply
+  # the same authentication policy as the REST API.
   socket "/swarm", GenswarmsWeb.SwarmSocket,
-    websocket: true,
+    websocket: [connect_info: [:peer_data, :x_headers]],
     longpoll: false
 
   # Code reloading in development
