@@ -38,9 +38,10 @@ defmodule Genswarms.IR.Ref do
   @content_addressable ~w(swarmidx oci)
   # Schemes that require a `host` field (§2.3).
   @host_required ~w(ssh)
-  # Connection-style schemes that may appear as a bare scheme with no `:body`
-  # (e.g. `"ref": "ssh"` with the target in the `host` field — §3.7).
-  @bare_schemes ~w(ssh host)
+  # Schemes that may appear bare (no `:body`): connection-style (`ssh`/`host`,
+  # §3.7) and the local execution backends a translated config produces
+  # (`local`/`bwrap`/`mock`) — non-package `<other>` schemes per §2.1.
+  @bare_schemes ~w(ssh host local bwrap mock)
 
   @doc """
   Parses a JSON-decoded ref map (string keys) into a validated `t`.
