@@ -9,8 +9,15 @@ defmodule Genswarms.CLI.EnvManager do
   - Automatic .env discovery and loading
   """
 
+  require Logger
+
   @default_env_file ".env"
   @example_env_file ".env.example"
+
+  # Files that mark a project root; auto-discovery never searches above the
+  # first ancestor containing one of these, so it can't pick up an unrelated
+  # parent/home .env (audit finding 35).
+  @project_root_markers ["mix.exs", ".genswarms"]
 
   @doc """
   Loads environment variables from a .env file.
@@ -23,11 +30,20 @@ defmodule Genswarms.CLI.EnvManager do
     if File.exists?(expanded_path) do
       case parse_file(expanded_path) do
         {:ok, vars} ->
-          Enum.each(vars, fn {key, value} ->
-            System.put_env(key, value)
-          end)
+          # Do not overwrite variables already present in the environment — an
+          # explicit shell export / process env wins over the .env file
+          # (standard dotenv behavior; avoids a stray .env shadowing real config).
+          applied =
+            Enum.count(vars, fn {key, value} ->
+              if System.get_env(key) == nil do
+                System.put_env(key, value)
+                true
+              else
+                false
+              end
+            end)
 
-          {:ok, map_size(vars)}
+          {:ok, applied}
 
         {:error, reason} ->
           {:error, reason}
@@ -45,8 +61,15 @@ defmodule Genswarms.CLI.EnvManager do
   def auto_load(start_dir \\ File.cwd!()) do
     case find_env_file(start_dir, 5) do
       {:ok, path} ->
-        load(path)
-        {:ok, path}
+        case load(path) do
+          {:ok, count} ->
+            # Log which .env was loaded so an unintended path is visible.
+            Logger.info("Loaded #{count} env var(s) from #{path}")
+            {:ok, path}
+
+          {:error, _reason} ->
+            {:error, :not_found}
+        end
 
       :not_found ->
         {:error, :not_found}
@@ -62,18 +85,28 @@ defmodule Genswarms.CLI.EnvManager do
   def find_env_file(dir, levels_remaining) do
     env_path = Path.join(dir, @default_env_file)
 
-    if File.exists?(env_path) do
-      {:ok, env_path}
-    else
-      parent = Path.dirname(dir)
+    cond do
+      File.exists?(env_path) ->
+        {:ok, env_path}
 
-      if parent == dir do
-        # Reached root
+      # Stop at the project root — never load a .env from above it.
+      project_root?(dir) ->
         :not_found
-      else
-        find_env_file(parent, levels_remaining - 1)
-      end
+
+      true ->
+        parent = Path.dirname(dir)
+
+        if parent == dir do
+          # Reached filesystem root
+          :not_found
+        else
+          find_env_file(parent, levels_remaining - 1)
+        end
     end
+  end
+
+  defp project_root?(dir) do
+    Enum.any?(@project_root_markers, fn marker -> File.exists?(Path.join(dir, marker)) end)
   end
 
   @doc """

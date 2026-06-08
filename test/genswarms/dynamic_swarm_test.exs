@@ -144,6 +144,24 @@ defmodule Genswarms.DynamicSwarmTest do
       # Original seed had 1 agent; we now have 2 in the config
       assert status.config.agent_count == 2
     end
+
+    test "rejects an agent name with shell metacharacters (runtime path)", %{swarm: swarm} do
+      # The dynamic add-agent path bypasses SwarmConfig.parse, so validation must
+      # also happen here — names flow into backend spawn commands.
+      for evil <- ["a; touch /tmp/pwned", "a$(id)", "a b", "../escape", "1starts_digit"] do
+        assert {:error, {:invalid_agent_name, _}} =
+                 SwarmManager.add_agent(swarm, %{name: evil, backend: :mock}),
+               "expected #{inspect(evil)} to be rejected at the runtime add_agent path"
+
+        # And no agent process was registered under that name.
+        assert [] = Registry.lookup(Genswarms.AgentRegistry, {swarm, String.to_atom(evil)})
+      end
+    end
+
+    test "accepts a valid agent name at the runtime path", %{swarm: swarm} do
+      assert {:ok, :valid_one} =
+               SwarmManager.add_agent(swarm, %{name: "valid_one", backend: :mock})
+    end
   end
 
   describe "remove_agent/3" do

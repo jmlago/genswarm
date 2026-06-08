@@ -59,7 +59,7 @@ defmodule GenswarmsWeb.SwarmChannel do
         {:reply, {:ok, %{status: "sent"}}, socket}
 
       {:error, reason} ->
-        {:reply, {:error, %{reason: inspect(reason)}}, socket}
+        {:reply, {:error, %{reason: GenswarmsWeb.SwarmController.format_error(reason)}}, socket}
     end
   end
 
@@ -72,7 +72,7 @@ defmodule GenswarmsWeb.SwarmChannel do
         {:reply, {:ok, status}, socket}
 
       {:error, reason} ->
-        {:reply, {:error, %{reason: inspect(reason)}}, socket}
+        {:reply, {:error, %{reason: GenswarmsWeb.SwarmController.format_error(reason)}}, socket}
     end
   end
 

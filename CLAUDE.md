@@ -298,7 +298,58 @@ For bwrap agents, backend keys are separated from domain keys in agent config. B
 }
 ```
 
-Backend keys: `workspace`, `extra_path`, `extra_ro_binds`, `extra_rw_binds`, `memory_limit`, `cpu_shares`, `tasks_max`, `subzeroclaw_path`, `presets`
+Backend keys: `workspace`, `extra_path`, `extra_ro_binds`, `extra_rw_binds`, `memory_limit`, `cpu_shares`, `tasks_max`, `subzeroclaw_path`, `presets`, `network`
+
+### Network Isolation (`network: :isolated`)
+
+By default agents share the host network (bwrap shares the host network
+namespace; docker uses a normal bridge) and can therefore reach the orchestrator
+API on `localhost`/the host plus the open internet. Set `network: :isolated` in
+an agent's `config` to contain that (supported on **bwrap** and **docker**):
+
+```elixir
+%{name: :researcher, backend: :bwrap,            config: %{network: :isolated}}
+%{name: :scraper,    backend: {:docker, "web"}, config: %{network: :isolated}}
+```
+
+**Use it whenever an agent ingests untrusted/external content** (web pages,
+third-party files, messages from outside users) — i.e. anything that can
+prompt-inject the agent. Isolation prevents an injected agent from (a) escalating
+into the swarm via the orchestrator API and (b) exfiltrating secrets/context to
+an arbitrary host.
+
+Implementation (`Genswarms.Backends.EgressGuard`): the sandbox gets **no network**
+(bwrap `--unshare-net`, docker `--network none`); the only egress is a Unix socket
+that a `socat` forwarder pins to the resolved LLM endpoint. A `.curlrc` injected
+into the sandbox (`CURL_HOME=/workspace`) routes the agent's `curl` (subzeroclaw's
+transport) through it. Inside the sandbox: `curl localhost:4000` and `curl evil`
+both fail; only the pinned LLM endpoint is reachable, and the destination is fixed
+by the forwarder (not the agent).
+
+Where the forwarder runs differs by backend, because a Unix socket is a kernel
+object — both ends must share one kernel:
+
+- **bwrap** (`:host_socat`): socat is spawned by the BEAM and the socket lives in
+  the agent workspace (bind-mounted at `/workspace`). The orchestrator and the
+  bwrap sandbox share the host kernel, so this works directly. Requires `socat` on
+  the host.
+- **docker** (`:docker_sidecar`): socat runs in a **sidecar container** sharing a
+  docker volume (mounted at `/egress`) with the `--network none` agent container.
+  Required because the orchestrator BEAM may run on a different kernel than the
+  agent container (e.g. host `beam.smp` + sibling containers on Docker Desktop,
+  where a host-side macOS-kernel socket can't be `connect()`ed from a Linux VM
+  container). The sidecar has egress; the agent only the volume socket. Sidecar
+  image via `config :genswarms, :egress_image` (default `alpine/socat`). Isolated
+  docker agents also get a per-container workspace, and `:isolated` overrides the
+  `config[:network]` key (normally a docker network name).
+
+Endpoint allowlist: the forwarder destination is the resolved endpoint, and a
+per-agent `:endpoint` is attacker-influenceable (dynamic add-agent API). So a
+per-agent endpoint is honored only if its host is allowlisted — the server's own
+endpoint host, or `GENSWARMS_ALLOWED_ENDPOINTS` (comma-separated hosts). The
+operator's env/default endpoint is always trusted. An isolated agent with a
+disallowed endpoint fails to start (fail closed), never forwarding to an arbitrary
+host.
 
 ### Skill Templating
 

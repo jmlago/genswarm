@@ -3,7 +3,16 @@ defmodule GenswarmsWeb.Router do
 
   pipeline :api do
     plug :accepts, ["json"]
-    plug Corsica, origins: "*", allow_headers: :all, allow_methods: :all
+    # Origins are restricted to an allowlist resolved at request time from
+    # GENSWARMS_CORS_ORIGINS (defaults to local dev origins). See GenswarmsWeb.Cors.
+    plug Corsica,
+      origins: {GenswarmsWeb.Cors, :allowed_origin?, []},
+      allow_headers: :all,
+      allow_methods: :all
+
+    # Corsica handles (and halts) CORS preflight OPTIONS before this point, so
+    # authentication only applies to actual API requests.
+    plug GenswarmsWeb.Plugs.ApiAuth
   end
 
   # API root - returns API info

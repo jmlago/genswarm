@@ -43,8 +43,12 @@ defmodule Genswarms.Observability.LogStore do
   require Logger
 
   @table :subzeroclaw_logs
-  @max_events 10_000
+  @default_max_events 10_000
   @pubsub_topic "log_store:events"
+
+  defp max_events do
+    Application.get_env(:genswarms, :max_log_events, @default_max_events)
+  end
 
   defstruct [:counter, :oldest_id]
 
@@ -380,7 +384,7 @@ defmodule Genswarms.Observability.LogStore do
       by_category: by_category,
       by_swarm: by_swarm,
       recent_errors: recent_errors,
-      max_events: @max_events
+      max_events: max_events()
     }
   end
 
@@ -404,27 +408,34 @@ defmodule Genswarms.Observability.LogStore do
 
   defp maybe_prune(state) do
     size = :ets.info(@table, :size)
+    max = max_events()
 
-    if size > @max_events do
-      # Delete oldest events to get back under limit
-      to_delete = size - @max_events
+    if size > max do
+      # Delete the oldest rows using the ordered_set's natural ordering
+      # (:ets.first is the smallest/oldest id). O(to_delete · log n) instead of
+      # a full :ets.tab2list + Enum.sort on every insert (audit finding 33);
+      # to_delete is normally 1, so this is ~O(log n) per logged event.
+      delete_oldest(size - max)
 
-      # Get the oldest IDs
-      oldest_ids =
-        :ets.tab2list(@table)
-        |> Enum.map(fn {id, _} -> id end)
-        |> Enum.sort()
-        |> Enum.take(to_delete)
-
-      Enum.each(oldest_ids, &:ets.delete(@table, &1))
-
-      # Update oldest_id
       case :ets.first(@table) do
         :"$end_of_table" -> %{state | oldest_id: nil}
         id -> %{state | oldest_id: id}
       end
     else
       state
+    end
+  end
+
+  defp delete_oldest(n) when n <= 0, do: :ok
+
+  defp delete_oldest(n) do
+    case :ets.first(@table) do
+      :"$end_of_table" ->
+        :ok
+
+      id ->
+        :ets.delete(@table, id)
+        delete_oldest(n - 1)
     end
   end
 end

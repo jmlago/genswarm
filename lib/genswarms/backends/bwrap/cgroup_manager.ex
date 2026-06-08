@@ -19,12 +19,13 @@ defmodule Genswarms.Backends.Bwrap.CgroupManager do
 
   ## Example Usage
 
-      {cmd, scope_name} = CgroupManager.create_scope("my-agent", "bwrap ...", %{
+      {exe, args, scope_name} = CgroupManager.create_scope("my-agent", ["bwrap", "..."], %{
         memory_max: "256M",
         cpu_shares: 100,
         tasks_max: 50
       })
-      # cmd is now: "systemd-run --user --scope ... -- bwrap ..."
+      # exe is the systemd-run path, args is its full argv list:
+      # ["--user", "--slice=...", ..., "--", "bwrap", "..."]
   """
 
   require Logger
@@ -35,8 +36,19 @@ defmodule Genswarms.Backends.Bwrap.CgroupManager do
   @doc """
   Creates a systemd scope command wrapper for the given command.
 
-  Returns `{full_command, scope_name}` where full_command wraps the original
-  command with systemd-run.
+  Accepts `command_args` as a list of discrete argv entries (the sandbox
+  executable followed by its arguments) and returns
+  `{executable, args, scope_name}`:
+
+  - `executable` - absolute path to `systemd-run`
+  - `args` - the full argv list for `systemd-run`, ending with `--` followed by
+    the original `command_args`
+  - `scope_name` - the transient unit name
+
+  The caller spawns the result with `Port.open({:spawn_executable, executable},
+  [{:args, args} | _])`, i.e. execvp with no shell. Because nothing is ever
+  joined into a shell string, untrusted values inside `command_args` cannot be
+  interpreted as shell commands.
 
   ## Options
 
@@ -45,34 +57,29 @@ defmodule Genswarms.Backends.Bwrap.CgroupManager do
   - `:tasks_max` - Maximum number of tasks/threads
   - `:timeout_sec` - Scope timeout (default: infinity)
   """
-  @spec create_scope(String.t(), String.t(), map()) :: {String.t(), String.t()}
-  def create_scope(sandbox_id, command, opts \\ %{}) do
+  @spec create_scope(String.t(), [String.t()], map()) ::
+          {String.t(), [String.t()], String.t()}
+  def create_scope(sandbox_id, command_args, opts \\ %{}) when is_list(command_args) do
     scope_name = "szc-#{sanitize_name(sandbox_id)}"
 
-    # Use full path for systemd-run (required for Port.open which uses /bin/sh)
+    # Absolute path for systemd-run (required by spawn_executable, which does
+    # not resolve bare names against PATH).
     systemd_run = find_executable("systemd-run")
 
-    args = [
-      systemd_run,
-      "--user",
-      # Use transient service instead of scope for I/O forwarding
-      # --scope doesn't support --pipe
-      "--slice=#{@systemd_slice}",
-      "--unit=#{scope_name}",
-      # Pass stdin/stdout/stderr through to the service
-      "--pipe",
-      # Quiet mode to not pollute stdout
-      "--quiet"
-    ]
+    args =
+      [
+        "--user",
+        # Use transient service instead of scope for I/O forwarding
+        # --scope doesn't support --pipe
+        "--slice=#{@systemd_slice}",
+        "--unit=#{scope_name}",
+        # Pass stdin/stdout/stderr through to the service
+        "--pipe",
+        # Quiet mode to not pollute stdout
+        "--quiet"
+      ] ++ build_property_args(opts) ++ ["--"] ++ command_args
 
-    # Add resource limits
-    args = args ++ build_property_args(opts)
-
-    # Separator and original command
-    args = args ++ ["--", command]
-
-    full_cmd = Enum.join(args, " ")
-    {full_cmd, scope_name}
+    {systemd_run, args, scope_name}
   end
 
   @doc """
@@ -297,13 +304,15 @@ defmodule Genswarms.Backends.Bwrap.CgroupManager do
   end
 
   defp find_executable(name) do
-    # Check common NixOS paths first, then fall back to which
+    # Check common NixOS paths first, then fall back to a PATH lookup. An
+    # absolute path is required because the scope is spawned via
+    # spawn_executable (execvp on a path), not through a shell.
     paths = [
       "/run/current-system/sw/bin/#{name}",
       "/usr/bin/#{name}",
       "/bin/#{name}"
     ]
 
-    Enum.find(paths, name, &File.exists?/1)
+    Enum.find(paths, &File.exists?/1) || System.find_executable(name) || name
   end
 end

@@ -156,7 +156,7 @@ defmodule Genswarms.Agents.AgentServer do
     # Backend keys control the execution environment (workspace, mounts, resources)
     # Domain keys are application-specific (population_size, max_iterations, etc.)
     backend_keys = ~w(workspace extra_path extra_ro_binds extra_rw_binds extra_env
-                      memory_limit cpu_shares tasks_max subzeroclaw_path presets)a
+                      memory_limit cpu_shares tasks_max subzeroclaw_path presets network)a
 
     {backend_overrides, _domain_config} = Map.split(agent_config, backend_keys)
 
@@ -350,15 +350,24 @@ defmodule Genswarms.Agents.AgentServer do
   end
 
   def handle_call({:update_skill, skill_name, content}, _from, state) do
-    if state.skills_dir do
-      path = Path.join(state.skills_dir, skill_name)
+    cond do
+      is_nil(state.skills_dir) ->
+        {:reply, {:error, :no_skills_dir}, state}
 
-      case File.write(path, content) do
-        :ok -> {:reply, :ok, state}
-        {:error, reason} -> {:reply, {:error, reason}, state}
-      end
-    else
-      {:reply, {:error, :no_skills_dir}, state}
+      not safe_skill_name?(skill_name) ->
+        # skill_name is an attacker-controlled URL segment; reject anything that
+        # is not a plain filename so it cannot traverse out of skills_dir
+        # (e.g. "../../etc/cron.d/x" via %2F-encoded slashes) into an arbitrary
+        # file write.
+        {:reply, {:error, :invalid_skill_name}, state}
+
+      true ->
+        path = Path.join(state.skills_dir, skill_name)
+
+        case File.write(path, content) do
+          :ok -> {:reply, :ok, state}
+          {:error, reason} -> {:reply, {:error, reason}, state}
+        end
     end
   end
 
@@ -468,6 +477,20 @@ defmodule Genswarms.Agents.AgentServer do
   end
 
   # Private functions
+
+  # A skill name is safe only if it is a single plain filename: non-empty, not a
+  # directory reference, and free of any path separator or null byte. The
+  # `Path.basename(name) == name` check is the core guard — basename strips every
+  # directory component, so any name containing "/" or "\\" (or being "../foo")
+  # fails it. This prevents update_skill from writing outside skills_dir.
+  defp safe_skill_name?(name) when is_binary(name) do
+    name != "" and
+      name not in [".", ".."] and
+      not String.contains?(name, ["/", "\\", "\0"]) and
+      Path.basename(name) == name
+  end
+
+  defp safe_skill_name?(_), do: false
 
   defp handle_agent_output(data, state) do
     full_data = state.buffer <> data

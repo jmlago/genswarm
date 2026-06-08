@@ -15,6 +15,18 @@ defmodule Genswarms.Config.ExsWriter do
 
   alias Genswarms.Config.SwarmConfig
 
+  # Map keys whose name looks secret-bearing; their values are redacted before a
+  # config/backend map is serialized, so a snapshot never persists secrets
+  # (api_key, env passwords/tokens, …) in cleartext (CWE-312). Matches e.g.
+  # api_key, SUBZEROCLAW_API_KEY, DB_PASSWORD, *_TOKEN, *secret*.
+  @sensitive_key_regex ~r/(?:key|secret|token|password|passwd|credential)/i
+  @redaction_placeholder "[REDACTED]"
+
+  # Keys that match the regex but name a non-secret (a path/reference, not the
+  # secret value itself) — must NOT be redacted or snapshot round-trip breaks
+  # (e.g. an SSH agent's key_path is a filename, not a private key).
+  @redaction_exceptions ~w(key_path)
+
   @spec to_exs_source(SwarmConfig.t()) :: String.t()
   def to_exs_source(%SwarmConfig{} = config) do
     header =
@@ -86,7 +98,7 @@ defmodule Genswarms.Config.ExsWriter do
   defp backend_field(spec) do
     case Map.get(spec, :backend) do
       nil -> nil
-      b -> "backend: #{inspect(b)}"
+      b -> "backend: #{inspect(redact_secrets(b))}"
     end
   end
 
@@ -121,7 +133,7 @@ defmodule Genswarms.Config.ExsWriter do
   defp config_field(spec) do
     case Map.get(spec, :config, %{}) do
       empty when empty == %{} -> nil
-      c -> "config: #{inspect(c)}"
+      c -> "config: #{inspect(redact_secrets(c))}"
     end
   end
 
@@ -130,5 +142,28 @@ defmodule Genswarms.Config.ExsWriter do
       nil -> nil
       h -> "handler: #{inspect(h)}"
     end
+  end
+
+  # Recursively replace the value of any map key whose name looks sensitive with
+  # a placeholder. Walks nested maps/lists/tuples so secrets inside backend opts
+  # and extra_env are caught too. The snapshot deliberately does not round-trip
+  # the real secret — the operator restores it via env (e.g. SUBZEROCLAW_API_KEY).
+  defp redact_secrets(map) when is_map(map) do
+    Map.new(map, fn {k, v} ->
+      if sensitive_key?(k), do: {k, @redaction_placeholder}, else: {k, redact_secrets(v)}
+    end)
+  end
+
+  defp redact_secrets(list) when is_list(list), do: Enum.map(list, &redact_secrets/1)
+
+  defp redact_secrets(tuple) when is_tuple(tuple) do
+    tuple |> Tuple.to_list() |> Enum.map(&redact_secrets/1) |> List.to_tuple()
+  end
+
+  defp redact_secrets(other), do: other
+
+  defp sensitive_key?(key) do
+    str = to_string(key)
+    str not in @redaction_exceptions and String.match?(str, @sensitive_key_regex)
   end
 end

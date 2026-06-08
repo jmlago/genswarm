@@ -62,6 +62,63 @@ defmodule Genswarms.Config.SwarmConfigTest do
       assert {:error, :missing_or_empty_agents} = SwarmConfig.parse(config)
     end
 
+    test "rejects agent names containing shell metacharacters (command-injection hardening)" do
+      for evil <- [
+            "a; touch /tmp/pwned",
+            "a$(id)",
+            "a`id`",
+            "a|cat",
+            "a name",
+            "a&&b",
+            "../escape",
+            "a\nb",
+            # trailing newline must be rejected too — ^...$ would have allowed
+            # it, \A...\z does not
+            "valid\n",
+            "\nvalid"
+          ] do
+        config = %{name: "test", agents: [%{name: evil, backend: :local}]}
+
+        assert {:error, {:invalid_agent_name, _}} = SwarmConfig.parse(config),
+               "expected #{inspect(evil)} to be rejected"
+      end
+    end
+
+    test "valid_identifier?/1 anchors the whole string (no trailing-newline bypass)" do
+      assert SwarmConfig.valid_identifier?("researcher")
+      assert SwarmConfig.valid_identifier?("coder_2")
+      assert SwarmConfig.valid_identifier?("eval-bot")
+      assert SwarmConfig.valid_identifier?(:atom_name)
+
+      refute SwarmConfig.valid_identifier?("valid\n")
+      refute SwarmConfig.valid_identifier?("\nvalid")
+      refute SwarmConfig.valid_identifier?("a b")
+      refute SwarmConfig.valid_identifier?("1leading")
+      refute SwarmConfig.valid_identifier?("a;b")
+      refute SwarmConfig.valid_identifier?("")
+      refute SwarmConfig.valid_identifier?(123)
+    end
+
+    test "rejects agent names that do not start with a letter" do
+      config = %{name: "test", agents: [%{name: "1agent", backend: :local}]}
+      assert {:error, {:invalid_agent_name, _}} = SwarmConfig.parse(config)
+    end
+
+    test "accepts valid agent names (letters, digits, underscore, hyphen)" do
+      config = %{
+        name: "test",
+        agents: [
+          %{name: "researcher", backend: :local},
+          %{name: "coder_2", backend: :local},
+          %{name: "eval-bot", backend: :local}
+        ],
+        topology: []
+      }
+
+      assert {:ok, parsed} = SwarmConfig.parse(config)
+      assert length(parsed.agents) == 3
+    end
+
     test "rejects invalid backend" do
       config = %{
         name: "test",

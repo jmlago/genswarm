@@ -125,6 +125,16 @@ defmodule Genswarms.CLI.APIClient do
 
   # Private
 
+  # Sends the API token (if configured) so the CLI works against an
+  # authenticated server. Reads GENSWARMS_API_TOKEN — the same variable the
+  # server reads — so local use without a token keeps working unchanged.
+  defp auth_header do
+    case System.get_env("GENSWARMS_API_TOKEN") do
+      token when is_binary(token) and token != "" -> "Authorization: Bearer #{token}\r\n"
+      _ -> ""
+    end
+  end
+
   # Simple socket-based HTTP client to avoid :httpc/:http_util issues
   defp request(method, path, body \\ nil) do
     uri = URI.parse(base_url() <> path)
@@ -139,6 +149,7 @@ defmodule Genswarms.CLI.APIClient do
 
     headers =
       "Host: #{host}:#{port}\r\n" <>
+        auth_header() <>
         "Content-Type: application/json\r\n" <>
         "Accept: application/json\r\n" <>
         "Content-Length: #{byte_size(body_str)}\r\n" <>

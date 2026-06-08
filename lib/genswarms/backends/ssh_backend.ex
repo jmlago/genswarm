@@ -252,10 +252,21 @@ defmodule Genswarms.Backends.SSHBackend do
     end
   end
 
-  defp build_connect_opts(user, key_path, config) do
+  @doc false
+  # Builds the option list for :ssh.connect/4.
+  #
+  # Host-key verification is ON by default: an unknown or changed remote host
+  # key aborts the connection (fail closed), preventing MITM. The remote key is
+  # checked against the known_hosts file in the SSH user_dir. Operators who
+  # genuinely need to skip verification (e.g. ephemeral dev hosts) must opt in
+  # explicitly via `silently_accept_hosts: true` in the backend config; that
+  # value may also be a verification fun, which is passed straight through.
+  def build_connect_opts(user, key_path, config) do
+    accept_hosts = Map.get(config, :silently_accept_hosts, false)
+
     base_opts = [
       {:user, String.to_charlist(user)},
-      {:silently_accept_hosts, true},
+      {:silently_accept_hosts, accept_hosts},
       {:user_interaction, false}
     ]
 
@@ -288,8 +299,9 @@ defmodule Genswarms.Backends.SSHBackend do
     if File.exists?(expanded_local) do
       Logger.info("Deploying skills from #{expanded_local} to #{remote_skills_dir}")
 
-      # Create remote directory
-      exec_command(connection, "mkdir -p #{remote_skills_dir}")
+      # Create remote directory (remote_skills_dir is shell-quoted: this runs as
+      # a remote shell command and the path may come from config).
+      exec_command(connection, "mkdir -p #{shell_escape(remote_skills_dir)}")
 
       case :ssh_sftp.start_channel(connection) do
         {:ok, channel_pid} ->
@@ -330,27 +342,7 @@ defmodule Genswarms.Backends.SSHBackend do
          remote_user,
          config
        ) do
-    api_key = Map.get(config, :api_key) || System.get_env("SUBZEROCLAW_API_KEY")
-    model = Map.get(config, :model) || System.get_env("SUBZEROCLAW_MODEL")
-    endpoint = Map.get(config, :endpoint) || System.get_env("SUBZEROCLAW_ENDPOINT")
-
-    # Build command with environment
-    env_vars = [
-      "SUBZEROCLAW_AGENT_NAME=#{name}",
-      "SUBZEROCLAW_SKILLS=#{remote_skills_dir}"
-    ]
-
-    env_vars = if api_key, do: env_vars ++ ["SUBZEROCLAW_API_KEY=#{api_key}"], else: env_vars
-    env_vars = if model, do: env_vars ++ ["SUBZEROCLAW_MODEL=#{model}"], else: env_vars
-    env_vars = if endpoint, do: env_vars ++ ["SUBZEROCLAW_ENDPOINT=#{endpoint}"], else: env_vars
-
-    # For NixOS, run as the subzeroclaw user via sudo if needed
-    cmd =
-      if Map.get(config, :nixos, true) and remote_user != nil do
-        "sudo -u #{remote_user} env #{Enum.join(env_vars, " ")} #{subzeroclaw_path}"
-      else
-        "env #{Enum.join(env_vars, " ")} #{subzeroclaw_path}"
-      end
+    cmd = build_remote_command(name, subzeroclaw_path, remote_skills_dir, remote_user, config)
 
     case :ssh_connection.session_channel(connection, :infinity) do
       {:ok, channel} ->
@@ -369,6 +361,51 @@ defmodule Genswarms.Backends.SSHBackend do
       {:error, reason} ->
         {:error, {:channel_failed, reason}}
     end
+  end
+
+  @doc false
+  # Builds the remote shell command that launches subzeroclaw.
+  #
+  # SSH "exec" requests are interpreted by the remote login shell — there is no
+  # argv channel as there is for local processes — so every value interpolated
+  # into the command MUST be shell-quoted. Each untrusted value (agent name,
+  # skills dir, model, api_key, endpoint, subzeroclaw path, remote user) is
+  # passed through shell_escape/1, so metacharacters are treated as literal
+  # data and cannot inject additional commands.
+  def build_remote_command(name, subzeroclaw_path, remote_skills_dir, remote_user, config) do
+    api_key = Map.get(config, :api_key) || System.get_env("SUBZEROCLAW_API_KEY")
+    model = Map.get(config, :model) || System.get_env("SUBZEROCLAW_MODEL")
+    endpoint = Map.get(config, :endpoint) || System.get_env("SUBZEROCLAW_ENDPOINT")
+
+    env_vars =
+      [
+        {"SUBZEROCLAW_AGENT_NAME", name},
+        {"SUBZEROCLAW_SKILLS", remote_skills_dir},
+        {"SUBZEROCLAW_API_KEY", api_key},
+        {"SUBZEROCLAW_MODEL", model},
+        {"SUBZEROCLAW_ENDPOINT", endpoint}
+      ]
+      |> Enum.filter(fn {_k, v} -> v != nil end)
+      |> Enum.map(fn {k, v} -> "#{k}=#{shell_escape(v)}" end)
+
+    env_segment = Enum.join(env_vars, " ")
+    binary = shell_escape(subzeroclaw_path)
+
+    # For NixOS, run as the subzeroclaw user via sudo if needed
+    if Map.get(config, :nixos, true) and remote_user != nil do
+      "sudo -u #{shell_escape(remote_user)} env #{env_segment} #{binary}"
+    else
+      "env #{env_segment} #{binary}"
+    end
+  end
+
+  # POSIX shell single-quote escaping: wrap the value in single quotes and
+  # replace every embedded single quote with the '\'' sequence. The result is a
+  # single shell word that reproduces the input verbatim, with no metacharacter
+  # left active.
+  defp shell_escape(value) do
+    escaped = value |> to_string() |> String.replace("'", "'\\''")
+    "'" <> escaped <> "'"
   end
 
   defp exec_command(connection, cmd) do

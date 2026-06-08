@@ -4,7 +4,7 @@ defmodule Genswarms.Config.LoaderTest do
   alias Genswarms.Config.Loader
 
   describe "load_string/2" do
-    test "loads configuration from Elixir string" do
+    test "refuses to evaluate .exs string content (RCE hardening)" do
       content = """
       %{
         name: "test-swarm",
@@ -15,10 +15,17 @@ defmodule Genswarms.Config.LoaderTest do
       }
       """
 
-      {:ok, config} = Loader.load_string(content, :exs)
+      assert {:error, :exs_string_not_supported} = Loader.load_string(content, :exs)
+    end
 
-      assert config.name == "test-swarm"
-      assert length(config.agents) == 1
+    test "does not execute code embedded in .exs string content (no RCE side effect)" do
+      marker = Path.join(System.tmp_dir!(), "loader_rce_#{System.unique_integer([:positive])}")
+      File.rm(marker)
+
+      content = ~s|File.write!(#{inspect(marker)}, "pwned"); %{name: "x", agents: []}|
+
+      assert {:error, :exs_string_not_supported} = Loader.load_string(content, :exs)
+      refute File.exists?(marker), "RCE: embedded code in .exs string content was executed"
     end
 
     test "loads configuration from JSON string" do
@@ -49,11 +56,6 @@ defmodule Genswarms.Config.LoaderTest do
       {:ok, config} = Loader.load_string(content, :yaml)
 
       assert config.name == "test-swarm"
-    end
-
-    test "returns error for invalid Elixir syntax" do
-      content = "not valid elixir {"
-      assert {:error, {:eval_error, _}} = Loader.load_string(content, :exs)
     end
 
     test "returns error for invalid JSON" do
