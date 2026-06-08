@@ -114,6 +114,7 @@ The backend keys are:
 | `tasks_max` | integer | `50` | Max number of tasks/processes. |
 | `subzeroclaw_path` | string | resolved | Explicit path to the `subzeroclaw` binary. |
 | `presets` | list of atoms | `[:base]` | The same agent-level `presets` key (above), forwarded to the sandbox. The bwrap backend falls back to `[:base]` when none are given. |
+| `network` | `:open` \| `:isolated` | `:open` | `:isolated` cuts the agent's network to a single forwarder pinned to the LLM endpoint — use it for agents that ingest untrusted content. See [Security › network isolation](security.md#agent-network-isolation). |
 
 Any key in `config` not listed above (for example `population_size` or `max_iterations`) is preserved as domain config and is not interpreted by the backend.
 

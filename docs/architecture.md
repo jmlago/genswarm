@@ -55,6 +55,8 @@ The diagrams in `README.md` and `CLAUDE.md` are conceptual and do not match the 
 
 `Genswarms.SwarmManager` is the lifecycle GenServer. It loads configs, tracks per-swarm status (`:starting | :running | :stopping | :stopped | :error`), and starts agents and objects via thin helper modules that delegate to the shared dynamic supervisor.
 
+Every swarm definition and dynamic mutation passes through the [IR](intermediate-representation.md) gate (`Genswarms.IR.Gate`): a config must translate to a valid `swarm.state` before any agent is spawned, and `add_agent`/`scale_agent_group` are bounded by the per-swarm policy. The IR is the pure-data model that validates, mutates, and can drive a swarm.
+
 ```text
 SwarmManager (single GenServer, tracks swarms: %{name => info})
    │  starts/stops children on the shared supervisor

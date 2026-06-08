@@ -40,6 +40,7 @@ working directory (searching up to 5 parents). Key env vars (full list in gettin
 | `SUBZEROCLAW_MOCK_SCRIPT` | Run real agents w/o LLM (canned responses) | — |
 | `PORT` | API server port | `4000` |
 | `SWARM_API_URL` | Base URL CLI uses to reach the server | `http://localhost:4000` |
+| `GENSWARMS_API_TOKEN` | Bearer token securing the REST + WebSocket API | — (unset = loopback-only) |
 
 ## Core workflow
 
@@ -168,8 +169,11 @@ for live streaming. Full reference: [docs/cli.md](docs/cli.md).
 
 ## Driving via REST API
 
-Server runs at `http://localhost:4000` (JSON only, CORS open). Start it with `genswarms up`.
+Server runs at `http://localhost:4000` (JSON only). Start it with `genswarms up`.
 Many runtime ops (add/remove agents, edit topology, restart-agent, edit skills) are API-only.
+When `GENSWARMS_API_TOKEN` is set, send `Authorization: Bearer $GENSWARMS_API_TOKEN`
+on every request (the CLI does this automatically); unset, the API accepts
+loopback callers only. See [Security](docs/security.md) before exposing the server.
 
 ```bash
 curl http://localhost:4000/api/swarms                          # list swarms

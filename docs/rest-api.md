@@ -12,7 +12,8 @@ All routes are defined in `lib/genswarms_web/router.ex` and implemented by the c
 
 - Base URL: `http://localhost:4000` (the port is set by the `PORT` env var, default `4000`).
 - The API pipeline accepts `application/json` only. Send request bodies as JSON and set `Content-Type: application/json`.
-- CORS is enabled for all origins (`origins: "*"`, all headers and methods allowed) via Corsica, so browser-based frontends can call the API directly.
+- **Authentication:** when `GENSWARMS_API_TOKEN` is set, every request must send `Authorization: Bearer <token>`; when unset, only loopback callers are accepted. The CLI attaches the token automatically. See [Security](security.md).
+- CORS is restricted to an allowlist (`GENSWARMS_CORS_ORIGINS`, default local dev origins) via Corsica — see [Security](security.md#cors).
 - Successful responses return a JSON object. Errors return a JSON object with an `error` (string) or `errors`/`valid` field and an appropriate HTTP status (`400`, `404`, `500`).
 - Most endpoints work for both in-process swarms and daemon swarms; the controller falls back to the SQLite registry / Docker when a swarm runs in a separate OS process.
 

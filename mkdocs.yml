@@ -108,6 +108,7 @@ nav:
       - Messaging & routing: messaging.md
       - Objects: objects.md
       - Skills: skills.md
+      - Intermediate representation (IR): intermediate-representation.md
   - Backends & deployment:
       - Backends: backends.md
       - Containers: containers.md
@@ -116,6 +117,7 @@ nav:
       - WebSocket API: websocket.md
       - Programmatic usage: programmatic.md
   - Operations:
+      - Security: security.md
       - Observability: observability.md
       - Testing: testing.md
       - Troubleshooting: troubleshooting.md

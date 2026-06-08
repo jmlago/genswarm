@@ -17,7 +17,9 @@ fault tolerance via OTP supervision trees.
 - **NixOS-based containers** — minimal, declarative images carrying only the tools each agent needs.
 - **File-based messaging** — reliable delivery to sandboxed agents via `.inbox/` and `.outbox/`.
 - **Daemon-based swarms** — swarms run as independent OS processes, coordinated through SQLite.
-- **REST API + WebSocket** — full programmatic control and real-time event streaming (JSON only, CORS enabled).
+- **REST API + WebSocket** — full programmatic control and real-time event streaming (JSON only, Bearer-token auth, loopback-safe by default).
+- **Network isolation** — run agents that ingest untrusted content with `network: :isolated`: no network except a forwarder pinned to the LLM, so a prompt-injected agent can't reach the orchestrator or exfiltrate data.
+- **Validated control plane** — every swarm definition and dynamic mutation is validated by the [intermediate representation](docs/intermediate-representation.md) (`swarm.state` / `swarm.overlay`) before it touches the runtime.
 - **Runtime scaling** — grow or shrink agent groups in a live swarm.
 - **Centralized observability** — query and stream events and logs via CLI or API.
 - **Mock backend** — test swarm logic without any LLM calls.
@@ -186,6 +188,21 @@ separation — is documented in [docs/configuration.md](docs/configuration.md).
 
 See [docs/backends.md](docs/backends.md) and [docs/containers.md](docs/containers.md).
 
+## Security
+
+GenSwarms is off-by-default-safe: a fresh server is never silently open to the
+network. Before exposing it:
+
+- Set **`GENSWARMS_API_TOKEN`** — every REST/WebSocket request then needs
+  `Authorization: Bearer <token>`; unset, only loopback callers are accepted. The
+  production HTTP endpoint also binds to loopback by default (`GENSWARMS_HTTP_IP`).
+- Run agents that ingest untrusted content with **`config: %{network: :isolated}`**
+  — the agent gets no network except a forwarder pinned to the LLM endpoint, so a
+  prompt-injected agent can neither reach the orchestrator nor exfiltrate data.
+
+Full reference (CORS, endpoint allowlist, config-path restriction, SSH host-key
+verification): **[docs/security.md](docs/security.md)**.
+
 ## Documentation
 
 **Getting started**
@@ -198,6 +215,7 @@ See [docs/backends.md](docs/backends.md) and [docs/containers.md](docs/container
 - [Messaging & routing](docs/messaging.md) — `@agent:` syntax, topology, inbox/outbox
 - [Objects](docs/objects.md) — non-agentic components
 - [Skills](docs/skills.md) — per-agent skills and templating
+- [Intermediate representation (IR)](docs/intermediate-representation.md) — the pure-data swarm model + control-plane gate
 
 **Backends & deployment**
 - [Backends](docs/backends.md) — Local / Docker / SSH / Bwrap / Mock
@@ -209,6 +227,7 @@ See [docs/backends.md](docs/backends.md) and [docs/containers.md](docs/container
 - [Programmatic usage](docs/programmatic.md) — Genswarms as an Elixir library
 
 **Operations**
+- [Security](docs/security.md) — API auth, network binding, CORS, agent network isolation
 - [Observability](docs/observability.md) — events, logging, telemetry
 - [Testing](docs/testing.md) — unit tests, e2e harness, mock backend
 - [Troubleshooting](docs/troubleshooting.md) — common problems
