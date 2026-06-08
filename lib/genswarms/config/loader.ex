@@ -85,13 +85,12 @@ defmodule Genswarms.Config.Loader do
     end
   end
 
-  defp parse_string(content, :exs) do
-    try do
-      {config, _bindings} = Code.eval_string(content)
-      normalize_config(config)
-    rescue
-      e -> {:error, {:eval_error, e}}
-    end
+  defp parse_string(_content, :exs) do
+    # `.exs` is executable Elixir. The only source of *string* configs is the
+    # network API, which is untrusted, so evaluating it would be arbitrary code
+    # execution (RCE). String configs must be data-only (json/yaml). Trusted
+    # `.exs` *files* are still supported via `load/1` (the local CLI workflow).
+    {:error, :exs_string_not_supported}
   end
 
   defp parse_string(content, :json) do
