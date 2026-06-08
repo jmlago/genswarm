@@ -58,3 +58,14 @@ Thumbs.db
 # Release artifacts
 /rel
 .test-logs/
+
+# MkDocs / Pages build output
+_site/
+site/
+
+# MkDocs social plugin cache
+.cache/
+
+# ExUnit :tmp_dir scratch
+/tmp/
+tmp/

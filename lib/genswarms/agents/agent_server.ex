@@ -156,7 +156,7 @@ defmodule Genswarms.Agents.AgentServer do
     # Backend keys control the execution environment (workspace, mounts, resources)
     # Domain keys are application-specific (population_size, max_iterations, etc.)
     backend_keys = ~w(workspace extra_path extra_ro_binds extra_rw_binds extra_env
-                      memory_limit cpu_shares tasks_max subzeroclaw_path presets)a
+                      memory_limit cpu_shares tasks_max subzeroclaw_path presets network)a
 
     {backend_overrides, _domain_config} = Map.split(agent_config, backend_keys)
 

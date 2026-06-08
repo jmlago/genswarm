@@ -294,7 +294,45 @@ For bwrap agents, backend keys are separated from domain keys in agent config. B
 }
 ```
 
-Backend keys: `workspace`, `extra_path`, `extra_ro_binds`, `extra_rw_binds`, `memory_limit`, `cpu_shares`, `tasks_max`, `subzeroclaw_path`, `presets`
+Backend keys: `workspace`, `extra_path`, `extra_ro_binds`, `extra_rw_binds`, `memory_limit`, `cpu_shares`, `tasks_max`, `subzeroclaw_path`, `presets`, `network`
+
+### Network Isolation (`network: :isolated`)
+
+By default agents share the host network (bwrap shares the host network
+namespace; docker uses a normal bridge) and can therefore reach the orchestrator
+API on `localhost`/the host plus the open internet. Set `network: :isolated` in
+an agent's `config` to contain that (supported on **bwrap** and **docker**):
+
+```elixir
+%{name: :researcher, backend: :bwrap,            config: %{network: :isolated}}
+%{name: :scraper,    backend: {:docker, "web"}, config: %{network: :isolated}}
+```
+
+**Use it whenever an agent ingests untrusted/external content** (web pages,
+third-party files, messages from outside users) — i.e. anything that can
+prompt-inject the agent. Isolation prevents an injected agent from (a) escalating
+into the swarm via the orchestrator API and (b) exfiltrating secrets/context to
+an arbitrary host.
+
+Implementation (`Genswarms.Backends.EgressGuard`): the sandbox gets **no network**
+(bwrap `--unshare-net`, docker `--network none`); the only egress is a
+bind-mounted Unix socket that a host-side `socat` forwarder pins to the resolved
+LLM endpoint. A `.curlrc` injected into the sandbox (`CURL_HOME=/workspace`)
+routes the agent's `curl` (subzeroclaw's transport) through it. Inside the
+sandbox: `curl localhost:4000` and `curl evil` both fail; only the pinned LLM
+endpoint is reachable. The forwarder destination is fixed on the host, so the
+agent cannot redirect it. Requires `socat` on the host. (Docker isolated agents
+get a per-container workspace so their sockets never collide; for docker the
+`config[:network]` key — normally a docker network name — is overridden by
+`:isolated`.)
+
+Endpoint allowlist: the forwarder destination is the resolved endpoint, and a
+per-agent `:endpoint` is attacker-influenceable (dynamic add-agent API). So a
+per-agent endpoint is honored only if its host is allowlisted — the server's own
+endpoint host, or `GENSWARMS_ALLOWED_ENDPOINTS` (comma-separated hosts). The
+operator's env/default endpoint is always trusted. An isolated agent with a
+disallowed endpoint fails to start (fail closed), never forwarding to an arbitrary
+host.
 
 ### Skill Templating
 

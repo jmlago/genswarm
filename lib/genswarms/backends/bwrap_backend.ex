@@ -38,6 +38,7 @@ defmodule Genswarms.Backends.BwrapBackend do
   @behaviour Genswarms.Backends.BackendBehaviour
 
   alias Genswarms.Backends.Bwrap.{OverlayManager, CgroupManager, AgentTelemetry}
+  alias Genswarms.Backends.EgressGuard
   alias Genswarms.Observability.LogStore
 
   defstruct [
@@ -48,6 +49,7 @@ defmodule Genswarms.Backends.BwrapBackend do
     :cgroup_path,
     :skills_dir,
     :scope_name,
+    :egress,
     :buffer
   ]
 
@@ -59,6 +61,7 @@ defmodule Genswarms.Backends.BwrapBackend do
           cgroup_path: String.t() | nil,
           skills_dir: String.t() | nil,
           scope_name: String.t() | nil,
+          egress: Genswarms.Backends.EgressGuard.t() | nil,
           buffer: binary()
         }
 
@@ -124,50 +127,81 @@ defmodule Genswarms.Backends.BwrapBackend do
           :stderr_to_stdout
         ]
 
-        try do
-          port = Port.open({:spawn, full_cmd}, port_opts)
+        # Network isolation: start the egress forwarder (and write the sandbox
+        # .curlrc) before the sandbox so the LLM socket is ready on first call.
+        egress_result =
+          if EgressGuard.isolated?(config) do
+            EgressGuard.start_forwarder(workspace, config)
+          else
+            {:ok, nil}
+          end
 
-          ref = %__MODULE__{
-            port: port,
-            name: name,
-            sandbox_id: sandbox_id,
-            overlay_dir: overlay_dir,
-            cgroup_path: CgroupManager.get_cgroup_path(scope_name),
-            skills_dir: skills_dir,
-            scope_name: scope_name,
-            buffer: ""
-          }
+        with {:ok, egress} <- egress_result do
+          try do
+            port = Port.open({:spawn, full_cmd}, port_opts)
 
-          # Log to telemetry instead of Logger at scale
-          AgentTelemetry.log_event(sandbox_id, :started, %{
-            presets: presets,
-            memory_limit: memory_limit
-          })
+            ref = %__MODULE__{
+              port: port,
+              name: name,
+              sandbox_id: sandbox_id,
+              overlay_dir: overlay_dir,
+              cgroup_path: CgroupManager.get_cgroup_path(scope_name),
+              skills_dir: skills_dir,
+              scope_name: scope_name,
+              egress: egress,
+              buffer: ""
+            }
 
-          LogStore.log(:info, :backend, :bwrap_start, "Started bwrap sandbox #{sandbox_id}",
-            swarm: swarm_name,
-            agent: String.to_atom(name),
-            metadata: %{sandbox_id: sandbox_id, presets: presets}
-          )
+            # Log to telemetry instead of Logger at scale
+            AgentTelemetry.log_event(sandbox_id, :started, %{
+              presets: presets,
+              memory_limit: memory_limit
+            })
 
-          {:ok, ref}
-        rescue
-          e ->
-            # Cleanup on failure
+            LogStore.log(:info, :backend, :bwrap_start, "Started bwrap sandbox #{sandbox_id}",
+              swarm: swarm_name,
+              agent: String.to_atom(name),
+              metadata: %{sandbox_id: sandbox_id, presets: presets}
+            )
+
+            {:ok, ref}
+          rescue
+            e ->
+              # Cleanup on failure
+              EgressGuard.stop_forwarder(egress)
+              OverlayManager.cleanup_overlay(sandbox_id)
+              CgroupManager.kill_scope(scope_name)
+
+              LogStore.log(
+                :error,
+                :backend,
+                :bwrap_start_failed,
+                "Failed to start bwrap: #{inspect(e)}",
+                swarm: swarm_name,
+                agent: String.to_atom(name),
+                metadata: %{sandbox_id: sandbox_id, error: inspect(e)}
+              )
+
+              {:error, {:start_failed, e}}
+          end
+        else
+          {:error, reason} ->
+            # Egress forwarder failed to start; tear down the overlay/scope so we
+            # never run an "isolated" agent that actually has no network at all.
             OverlayManager.cleanup_overlay(sandbox_id)
             CgroupManager.kill_scope(scope_name)
 
             LogStore.log(
               :error,
               :backend,
-              :bwrap_start_failed,
-              "Failed to start bwrap: #{inspect(e)}",
+              :bwrap_egress_failed,
+              "Failed to start egress forwarder: #{inspect(reason)}",
               swarm: swarm_name,
               agent: String.to_atom(name),
-              metadata: %{sandbox_id: sandbox_id, error: inspect(e)}
+              metadata: %{sandbox_id: sandbox_id, reason: inspect(reason)}
             )
 
-            {:error, {:start_failed, e}}
+            {:error, {:egress_failed, reason}}
         end
 
       {:error, reason} ->
@@ -186,7 +220,13 @@ defmodule Genswarms.Backends.BwrapBackend do
   end
 
   @impl true
-  def stop(%__MODULE__{port: port, sandbox_id: sandbox_id, scope_name: scope_name, name: name}) do
+  def stop(%__MODULE__{
+        port: port,
+        sandbox_id: sandbox_id,
+        scope_name: scope_name,
+        egress: egress,
+        name: name
+      }) do
     AgentTelemetry.log_event(sandbox_id, :stopping, %{})
 
     # Close the port
@@ -197,6 +237,9 @@ defmodule Genswarms.Backends.BwrapBackend do
         _ -> :ok
       end
     end
+
+    # Stop the egress forwarder (isolated agents) and remove its socket
+    EgressGuard.stop_forwarder(egress)
 
     # Kill the cgroup scope (terminates all processes)
     if scope_name do
@@ -506,7 +549,19 @@ defmodule Genswarms.Backends.BwrapBackend do
       ]
       |> Enum.filter(&(&1 != nil))
 
-    (args ++ extra_bind_args ++ rest_args ++ extra_env_args ++ cmd_args)
+    # Network isolation (network: :isolated): drop the network namespace and
+    # point the agent's curl at the bind-mounted egress socket via CURL_HOME.
+    net_args = EgressGuard.bwrap_net_args(config)
+
+    curl_env_args =
+      if EgressGuard.isolated?(config) do
+        ["--setenv", "CURL_HOME", "/workspace"]
+      else
+        []
+      end
+
+    (args ++
+       net_args ++ extra_bind_args ++ rest_args ++ curl_env_args ++ extra_env_args ++ cmd_args)
     |> Enum.join(" ")
   end
 
