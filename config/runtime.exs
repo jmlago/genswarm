@@ -31,6 +31,9 @@ config :genswarms,
   subzeroclaw_path: System.get_env("SUBZEROCLAW_PATH", "subzeroclaw"),
   swarm_data_dir: System.get_env("SWARM_DATA_DIR", "~/.subzeroclaw/swarms"),
   skills_dir: System.get_env("SKILLS_DIR", "priv/skills"),
+  # Directory that API-supplied config_path values must stay within. Unset →
+  # the server's working directory. See Genswarms.Config.PathGuard.
+  swarm_config_dir: System.get_env("GENSWARMS_SWARM_CONFIG_DIR"),
   # API auth token. When set, every REST/WebSocket request must present
   # `Authorization: Bearer <token>`. When unset, only loopback callers are
   # allowed (see Genswarms.Auth). The CLI sends this token automatically.
