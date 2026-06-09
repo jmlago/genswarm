@@ -120,6 +120,32 @@ defmodule Genswarms.Objects.ObjectServer do
   end
 
   @doc """
+  Returns dashboard contributions from the object's handler.
+
+  If the handler exports `dashboard/1` it is called with the current handler state
+  and its return value (a list of contribution maps) is returned. Returns
+  `:no_dashboard` when the callback is absent (process-mode objects also return
+  `:no_dashboard` as they have no native Elixir handler state to inspect).
+  """
+  @spec get_dashboard(String.t(), atom()) :: [map()] | :no_dashboard
+  def get_dashboard(swarm_name, object_name) do
+    GenServer.call(via_tuple(swarm_name, object_name), :get_dashboard)
+  end
+
+  @doc """
+  Looks up a session transcript from the object's handler.
+
+  Calls the handler's optional `session_history/3` callback. Returns
+  `{:ok, turns}`, `:not_available` (handler returned `:not_available` or the
+  callback is not exported), or `:no_dashboard` for process-mode objects.
+  """
+  @spec get_session_history(String.t(), atom(), String.t(), map()) ::
+          {:ok, [map()]} | :not_available | :no_dashboard
+  def get_session_history(swarm_name, object_name, session_id, opts) do
+    GenServer.call(via_tuple(swarm_name, object_name), {:get_session_history, session_id, opts})
+  end
+
+  @doc """
   Log a message from an object to the centralized LogStore.
 
   This can be called by ObjectHandler implementations to log custom messages.
@@ -436,6 +462,43 @@ defmodule Genswarms.Objects.ObjectServer do
     # For process-mode objects, we don't have a handler interface
     # Could potentially query the process for its interface
     {:reply, %{note: "Process-mode object - interface not available"}, state}
+  end
+
+  def handle_call(:get_dashboard, _from, %{mode: :native, handler: handler, handler_state: hs} = state)
+      when not is_nil(handler) do
+    result =
+      if function_exported?(handler, :dashboard, 1) do
+        handler.dashboard(hs)
+      else
+        :no_dashboard
+      end
+
+    {:reply, result, state}
+  end
+
+  def handle_call(:get_dashboard, _from, state) do
+    # process-mode object or handler not set
+    {:reply, :no_dashboard, state}
+  end
+
+  def handle_call(
+        {:get_session_history, session_id, opts},
+        _from,
+        %{mode: :native, handler: handler, handler_state: hs} = state
+      )
+      when not is_nil(handler) do
+    result =
+      if function_exported?(handler, :session_history, 3) do
+        handler.session_history(hs, session_id, opts)
+      else
+        :not_available
+      end
+
+    {:reply, result, state}
+  end
+
+  def handle_call({:get_session_history, _session_id, _opts}, _from, state) do
+    {:reply, :not_available, state}
   end
 
   # Catch-all handlers for AgentServer calls that might be made on objects

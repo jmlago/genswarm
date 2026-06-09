@@ -108,5 +108,29 @@ defmodule Genswarms.Objects.ObjectHandler do
   """
   @callback terminate(reason :: term(), state :: term()) :: :ok
 
-  @optional_callbacks [terminate: 2, handle_info: 2]
+  @doc """
+  Returns dashboard contributions for the read-only swarm dashboard.
+
+  Optional. If implemented, return a list of contribution maps with `:kind` set to
+  `:sessions` (with `:items` list + optional `:pool` map) or `:extension` (with
+  `:name` string and `:data` map). The aggregator merges contributions from all
+  objects into the dashboard response.
+
+  Omitting this callback (`:no_dashboard`) is the default and is always safe.
+  """
+  @callback dashboard(state :: term()) :: [map()]
+
+  @doc """
+  Returns the conversation transcript for a session, or `:not_available`.
+
+  Optional. Called by the dashboard's `session_history` endpoint. The implementation
+  should look up turns by `session_id` from whatever durable store it manages, and
+  return `{:ok, [turn_map()]}` or `:not_available`.
+
+  `opts` is reserved for future pagination / filtering parameters.
+  """
+  @callback session_history(state :: term(), session_id :: String.t(), opts :: map()) ::
+              {:ok, [map()]} | :not_available
+
+  @optional_callbacks [terminate: 2, handle_info: 2, dashboard: 1, session_history: 3]
 end

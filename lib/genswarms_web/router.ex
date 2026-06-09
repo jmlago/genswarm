@@ -87,5 +87,11 @@ defmodule GenswarmsWeb.Router do
 
     # Config validation
     post "/config/validate", ConfigController, :validate
+
+    # Dashboard — read-only aggregated swarm state + session endpoints.
+    # Authenticated via the existing ApiAuth plug (GENSWARMS_API_TOKEN / loopback).
+    get "/swarms/:name/dashboard", DashboardController, :show
+    get "/swarms/:name/sessions/:session_id/history", DashboardController, :session_history
+    get "/swarms/:name/sessions/:session_id/logs", DashboardController, :session_logs
   end
 end
