@@ -13,7 +13,7 @@ defmodule Genswarms.Agents.AgentServer do
   use GenServer
   require Logger
 
-  alias Genswarms.Agents.{AgentProtocol, Inbox}
+  alias Genswarms.Agents.{AgentProtocol, Ask, Inbox}
   alias Genswarms.Observability.LogStore
   alias Genswarms.Config.SwarmConfig
   alias Genswarms.Routing.Router
@@ -111,6 +111,23 @@ defmodule Genswarms.Agents.AgentServer do
   """
   def deliver_message(swarm_name, agent_name, from, content) do
     GenServer.cast(via_tuple(swarm_name, agent_name), {:deliver_message, from, content})
+  end
+
+  @doc """
+  Delivers the envelope answering one of this agent's asks (`swarm-msg ask`).
+
+  Written to `{workspace}/.inbox/replies/{correlation_id}.json`, where the
+  agent's blocked `swarm-msg ask` is polling — NOT injected as a new
+  conversational turn, and the awaiting-reply flag is untouched (an ask is
+  synchronous from the agent's perspective; there is no async reply to guard).
+  A dead or unknown agent makes this a no-op: the reply is dropped and the
+  asker's own timeout envelope is the catch-all.
+  """
+  def deliver_ask_reply(swarm_name, agent_name, correlation_id, envelope) do
+    GenServer.cast(
+      via_tuple(swarm_name, agent_name),
+      {:deliver_ask_reply, correlation_id, envelope}
+    )
   end
 
   @doc """
@@ -618,6 +635,27 @@ defmodule Genswarms.Agents.AgentServer do
 
     {:noreply,
      %{state | awaiting_reply: false, awaiting_since: nil, awaiting_timer_ref: nil}}
+  end
+
+  # Answer to one of this agent's asks: write the envelope where the blocked
+  # `swarm-msg ask` is polling. No state change — in particular this does NOT
+  # touch awaiting_reply and does NOT inject a turn (that is the whole point
+  # of the ask path). Failures are logged and dropped; the asker's timeout
+  # envelope is the catch-all.
+  def handle_cast({:deliver_ask_reply, corr, envelope}, state) do
+    workspace = Map.get(state.backend_config, :workspace)
+
+    case Ask.write_reply(workspace, corr, envelope) do
+      :ok ->
+        Logger.debug("[#{state.swarm_name}/#{state.name}] Ask reply written: #{corr}")
+
+      {:error, reason} ->
+        Logger.warning(
+          "[#{state.swarm_name}/#{state.name}] Dropping ask reply #{corr}: #{inspect(reason)}"
+        )
+    end
+
+    {:noreply, state}
   end
 
   @impl true

@@ -5,6 +5,7 @@
 # Usage:
 #   swarm-msg send <agent> <message>       Send message via file outbox (preferred)
 #   swarm-msg send <agent> -f <file>       Send file contents via outbox
+#   swarm-msg ask <object> <message>       Send AND WAIT for the object's reply
 #   swarm-msg broadcast <message>          Broadcast to all connected agents
 #   swarm-msg list                         List available agents (from topology)
 #   swarm-msg send-stdout <agent> <msg>    Legacy: send via stdout protocol
@@ -24,6 +25,7 @@ swarm-msg - Inter-agent messaging for swarm communication
 USAGE:
     swarm-msg send <agent> <message>       Send message to an agent (via outbox)
     swarm-msg send <agent> -f <file>       Send file contents to an agent
+    swarm-msg ask <object> <message>       Send AND WAIT for the object's reply
     swarm-msg broadcast <message>          Broadcast to all connected agents
     swarm-msg list                         List agents you can message
     swarm-msg send-stdout <agent> <msg>    Legacy: send via stdout protocol
@@ -32,6 +34,9 @@ USAGE:
 EXAMPLES:
     # Send a JSON message
     swarm-msg send fixer_pool '{"action":"fix_result","status":"fixed"}'
+
+    # Ask an object and get its reply inline (synchronous):
+    swarm-msg ask browse '{"action":"render","url":"https://example.com/"}'
 
     # Send state report
     swarm-msg send metrics '{"action":"state_report","data":{"state":{"count":42}}}'
@@ -46,6 +51,13 @@ NOTES:
     Messages are written to /workspace/.outbox/ and picked up by the swarm
     router automatically. Agent names: agent_1, explorer, implementer, etc.
     Use 'list' to see agents in your topology.
+
+    'ask' blocks until the object's reply arrives and prints a JSON envelope:
+      {"ok":true,"result":{...},"error":null,"timeout":false,...}
+      {"ok":false,"error":{"code":"...","type":"permanent|transient"},...}
+    On timeout (SWARM_ASK_TIMEOUT seconds, default 30) it prints an
+    ok:false/timeout:true envelope. An error.type of "permanent" means
+    retrying the same ask can never succeed.
 EOF
 }
 
@@ -126,6 +138,106 @@ $(cat "$file")"
     mv -f "$tmpfile" "$outbox_dir/$filename"
 }
 
+# Synchronous ask — like send, but carries a reply_to correlation id and BLOCKS
+# until the engine writes the object's reply envelope to
+# $ASK_REPLY_DIR/<corr>.json (default /workspace/.inbox/replies/). Prints the
+# envelope to stdout, so a shell-tool caller receives the result inline in the
+# same turn. On timeout prints an ok:false/timeout:true envelope — the output
+# is ALWAYS one well-formed JSON envelope.
+ask_message() {
+    to="$1"
+    shift
+
+    message=""
+    file=""
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            -f|--file)
+                file="$2"
+                shift 2
+                ;;
+            -m|--message)
+                message="$2"
+                shift 2
+                ;;
+            *)
+                if [ -z "$message" ]; then
+                    message="$1"
+                fi
+                shift
+                ;;
+        esac
+    done
+
+    if [ -z "$to" ]; then
+        echo "Error: No target object specified" >&2
+        exit 1
+    fi
+
+    if [ -z "$message" ] && [ -z "$file" ]; then
+        echo "Error: No message or file specified" >&2
+        exit 1
+    fi
+
+    content="$message"
+    if [ -n "$file" ] && [ -f "$file" ]; then
+        if [ -n "$message" ]; then
+            content="${message}
+
+--- FILE: $(basename "$file") ---
+$(cat "$file")"
+        else
+            content="$(cat "$file")"
+        fi
+    fi
+
+    # Correlation id: generated locally (safe charset by construction); becomes
+    # the reply file name the engine writes to.
+    corr="ask_$$_$(date +%s%N 2>/dev/null || date +%s)"
+    reply_dir="${ASK_REPLY_DIR:-/workspace/.inbox/replies}"
+    reply_file="$reply_dir/$corr.json"
+    mkdir -p "$reply_dir"
+
+    outbox_dir="${OUTBOX_DIR:-/workspace/.outbox}"
+    mkdir -p "$outbox_dir"
+    seq=$(ls "$outbox_dir"/*.json 2>/dev/null | wc -l)
+    seq=$((seq + 1))
+    uniq="$$_$(date +%s%N 2>/dev/null || date +%s)"
+    filename=$(printf "%04d_%s_%s.json" "$seq" "$to" "$uniq")
+
+    encoded=$(printf '%s' "$content" | jq -Rs . 2>/dev/null) || true
+    if [ -z "$encoded" ]; then
+        encoded="\"$(printf '%s' "$content" | sed 's/\\/\\\\/g; s/"/\\"/g; s/	/\\t/g' | awk '{printf "%s\\n", $0}' | sed 's/\\n$//')\""
+    fi
+
+    # Atomic write (tmp + rename), same as send_message.
+    tmpfile="$outbox_dir/.tmp_${uniq}"
+    printf '{"to":"%s","content":%s,"reply_to":"%s"}\n' "$to" "$encoded" "$corr" > "$tmpfile"
+    mv -f "$tmpfile" "$outbox_dir/$filename"
+
+    # Block until the engine writes the reply envelope (atomic rename, so an
+    # existing file is always complete), or until the timeout.
+    timeout="${SWARM_ASK_TIMEOUT:-30}"
+    start=$(date +%s)
+    while :; do
+        if [ -f "$reply_file" ]; then
+            cat "$reply_file"
+            rm -f "$reply_file"
+            return 0
+        fi
+        now=$(date +%s)
+        if [ $((now - start)) -ge "$timeout" ]; then
+            break
+        fi
+        sleep 0.1 2>/dev/null || sleep 1
+    done
+
+    elapsed_ms=$(( ($(date +%s) - start) * 1000 ))
+    printf '{"ok":false,"result":null,"error":{"code":"timeout","message":"no reply from %s within %ss","type":"transient"},"timeout":true,"correlation_id":"%s","duration_ms":%d}\n' \
+        "$to" "$timeout" "$corr" "$elapsed_ms"
+}
+
 broadcast_message() {
     message="$1"
     if [ -z "$message" ]; then
@@ -196,6 +308,10 @@ case "${1:-help}" in
     send)
         shift
         send_message "$@"
+        ;;
+    ask)
+        shift
+        ask_message "$@"
         ;;
     broadcast)
         shift

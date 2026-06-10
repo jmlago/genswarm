@@ -6,6 +6,7 @@ defmodule Genswarms.Agents.LogWatcher do
   use GenServer
   require Logger
 
+  alias Genswarms.Agents.Ask
   alias Genswarms.Routing.Router
   alias Genswarms.Observability.LogStore
 
@@ -266,6 +267,24 @@ defmodule Genswarms.Agents.LogWatcher do
     case File.read(file_path) do
       {:ok, content} ->
         case Jason.decode(content) do
+          # Synchronous ask (swarm-msg ask): carries a reply_to correlation id.
+          # Routed via Router.ask so the object's reply is written to the
+          # caller's reply file instead of arriving as a new turn. This clause
+          # must precede the plain send clause (an ask also has to/content).
+          # The correlation id crossed the sandbox boundary — validate it
+          # before it can become a file name (path traversal).
+          {:ok, %{"to" => to, "content" => msg, "reply_to" => corr}} ->
+            if Ask.valid_correlation_id?(corr) do
+              Logger.info("[#{state.swarm_name}/#{state.agent_name}] Outbox ask → #{to}")
+              Router.ask(state.swarm_name, state.agent_name, String.to_atom(to), msg, corr)
+            else
+              Logger.warning(
+                "[#{state.swarm_name}/#{state.agent_name}] Dropping ask with invalid correlation id"
+              )
+            end
+
+            File.rm(file_path)
+
           {:ok, %{"to" => to, "content" => msg}} ->
             Logger.info("[#{state.swarm_name}/#{state.agent_name}] Outbox → #{to}")
             Router.route(state.swarm_name, state.agent_name, String.to_atom(to), msg)

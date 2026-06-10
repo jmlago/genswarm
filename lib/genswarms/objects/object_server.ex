@@ -26,6 +26,8 @@ defmodule Genswarms.Objects.ObjectServer do
   use GenServer
   require Logger
 
+  alias Genswarms.Agents.AgentServer
+  alias Genswarms.Agents.Ask
   alias Genswarms.Config.SwarmConfig
   alias Genswarms.Routing.Router
   alias Genswarms.Observability.LogStore
@@ -89,6 +91,24 @@ defmodule Genswarms.Objects.ObjectServer do
   """
   def deliver_message(swarm_name, object_name, from, content) do
     GenServer.cast(via_tuple(swarm_name, object_name), {:deliver_message, from, content})
+  end
+
+  @doc """
+  Delivers a synchronous ask from an agent (`swarm-msg ask` → `Router.ask/5`).
+
+  The handler runs exactly as for `deliver_message/4`, but its `{:reply, …}`
+  is wrapped in the typed ask envelope and written to the calling agent's
+  reply file (via `AgentServer.deliver_ask_reply/4`) instead of being routed
+  back as a new inbound turn. Handler returns that produce no reply
+  (`{:noreply, …}`, `{:send, …}`, …) still acknowledge the ask with a
+  `result: nil` envelope — the asker never waits out its timeout for a
+  handler that has already finished.
+  """
+  def deliver_ask(swarm_name, object_name, from, content, correlation_id) do
+    GenServer.cast(
+      via_tuple(swarm_name, object_name),
+      {:deliver_ask, from, content, correlation_id}
+    )
   end
 
   @doc """
@@ -508,6 +528,42 @@ defmodule Genswarms.Objects.ObjectServer do
   end
 
   @impl true
+  def handle_cast({:deliver_ask, from, content, corr}, state) do
+    cond do
+      state.state == :error ->
+        Logger.warning(
+          "[#{state.swarm_name}/#{state.name}] Object in error state, refusing ask from #{from}"
+        )
+
+        ask_reply(state, from, corr, Ask.error_envelope(corr, "object_error_state", "object #{state.name} is in error state", "transient"))
+        {:noreply, state}
+
+      state.mode != :native ->
+        # A process-mode object's replies arrive asynchronously on its own
+        # stdout — there is nothing to correlate the ask against. Answer with
+        # a typed permanent error instead of letting the asker time out.
+        ask_reply(state, from, corr, Ask.error_envelope(corr, "not_supported", "object #{state.name} is process-mode; ask requires a native object"))
+        {:noreply, state}
+
+      true ->
+        Logger.debug("[#{state.swarm_name}/#{state.name}] Received ask from #{from}")
+
+        LogStore.log(
+          :info,
+          :object,
+          :message_received,
+          "Object #{state.name} received ask from #{from}",
+          swarm: state.swarm_name,
+          agent: state.name,
+          metadata: %{from: from, ask: true}
+        )
+
+        new_state = %{state | state: :working, last_activity: DateTime.utc_now()}
+        handle_native_ask(from, content, corr, new_state)
+    end
+  end
+
+  @impl true
   def terminate(reason, %{mode: :native} = state) do
     if state.handler && function_exported?(state.handler, :terminate, 2) do
       state.handler.terminate(reason, state.handler_state)
@@ -623,6 +679,67 @@ defmodule Genswarms.Objects.ObjectServer do
 
         {:noreply, new_state}
     end
+  end
+
+  # The ask variant of handle_native_message: the handler runs identically, but
+  # a {:reply, …} becomes a typed envelope written to the asker's reply file
+  # instead of a routed message, and every non-reply shape still acknowledges
+  # the ask (result: nil) after performing its usual side effects — the blocked
+  # asker never waits out its timeout for a handler that already finished.
+  defp handle_native_ask(from, content, corr, state) do
+    started = System.monotonic_time(:millisecond)
+
+    {response, handler_state} =
+      case state.handler.handle_message(from, content, state.handler_state) do
+        {:reply, response, handler_state} ->
+          {response, handler_state}
+
+        {:send, to, message, handler_state} ->
+          route_message(state.swarm_name, state.name, to, message)
+          {nil, handler_state}
+
+        {:broadcast, message, handler_state} ->
+          Router.broadcast(state.swarm_name, state.name, message)
+          {nil, handler_state}
+
+        {:noreply, handler_state} ->
+          {nil, handler_state}
+
+        {:multi, messages, handler_state} ->
+          Enum.each(messages, fn
+            {:send, to, msg} -> route_message(state.swarm_name, state.name, to, msg)
+            {:broadcast, msg} -> Router.broadcast(state.swarm_name, state.name, msg)
+          end)
+
+          {nil, handler_state}
+
+        {:send_many, messages, handler_state} ->
+          Enum.each(messages, fn
+            {:send, to, msg} -> route_message(state.swarm_name, state.name, to, msg)
+            {:broadcast, msg} -> Router.broadcast(state.swarm_name, state.name, msg)
+            {to, msg} -> route_message(state.swarm_name, state.name, to, msg)
+          end)
+
+          {nil, handler_state}
+      end
+
+    duration_ms = System.monotonic_time(:millisecond) - started
+    ask_reply(state, from, corr, Ask.envelope(response, corr, duration_ms))
+
+    {:noreply,
+     %{
+       state
+       | handler_state: handler_state,
+         state: :idle,
+         message_count: state.message_count + 1
+     }}
+  end
+
+  # Hand the envelope to the asking agent's server, which owns the workspace
+  # path and writes the reply file. A dead/unknown asker makes this a no-op
+  # (the cast does not crash the object) — the reply is simply dropped.
+  defp ask_reply(state, from, corr, envelope) do
+    AgentServer.deliver_ask_reply(state.swarm_name, from, corr, envelope)
   end
 
   # Private functions - Process mode
