@@ -442,12 +442,26 @@ defmodule Genswarms.Backends.DockerBackend do
 
   # Default in-container bootstrap, as an argv list (["sh", "-c", script]) so it is
   # passed to `docker run IMAGE sh -c <script>` as discrete arguments — the script
-  # runs in the *container's* shell, never the host's.
-  @default_container_cmd [
-    "sh",
-    "-c",
-    "export HOME=/root && mkdir -p /root/.subzeroclaw /root/build && echo \"skills_dir = /skills\" > /root/.subzeroclaw/config && cp -r /src/subzeroclaw/* /root/build/ && cd /root/build && make -s 2>/dev/null && exec ./subzeroclaw"
-  ]
+  # runs in the *container's* shell, never the host's. A configured `max_turns`
+  # (the harness's per-turn step budget, genswarms#53 G3) is appended to the
+  # harness config; the value is integer-guarded so nothing non-numeric can ever
+  # reach this shell string.
+  defp default_container_cmd(config) do
+    budget =
+      case Map.get(config, :max_turns) do
+        n when is_integer(n) and n > 0 ->
+          " && echo \"max_turns = #{n}\" >> /root/.subzeroclaw/config"
+
+        _ ->
+          ""
+      end
+
+    [
+      "sh",
+      "-c",
+      "export HOME=/root && mkdir -p /root/.subzeroclaw /root/build && echo \"skills_dir = /skills\" > /root/.subzeroclaw/config#{budget} && cp -r /src/subzeroclaw/* /root/build/ && cd /root/build && make -s 2>/dev/null && exec ./subzeroclaw"
+    ]
+  end
 
   @doc false
   # Exposed for tests: builds the `docker run` argv list. Pure given its inputs.
@@ -467,7 +481,7 @@ defmodule Genswarms.Backends.DockerBackend do
     volume_args = build_volume_args(skills_dir, config)
     network_args = build_network_args(config)
     resource_args = build_resource_args(config)
-    container_cmd = normalize_container_cmd(Map.get(config, :cmd))
+    container_cmd = normalize_container_cmd(Map.get(config, :cmd), config)
 
     # Isolation: mount the shared egress volume so the agent reaches the sidecar
     # socat over /egress/llm.sock (its only path out, since --network none).
@@ -484,9 +498,11 @@ defmodule Genswarms.Backends.DockerBackend do
 
   # A user-supplied :cmd runs *inside the container*. A list is used as argv; a
   # bare string is wrapped as `sh -c <string>` (container shell, host-safe).
-  defp normalize_container_cmd(nil), do: @default_container_cmd
-  defp normalize_container_cmd(cmd) when is_list(cmd), do: Enum.map(cmd, &to_string/1)
-  defp normalize_container_cmd(cmd) when is_binary(cmd), do: ["sh", "-c", cmd]
+  # Only the DEFAULT bootstrap honors :max_turns — a custom cmd owns its own
+  # harness setup.
+  defp normalize_container_cmd(nil, config), do: default_container_cmd(config)
+  defp normalize_container_cmd(cmd, _config) when is_list(cmd), do: Enum.map(cmd, &to_string/1)
+  defp normalize_container_cmd(cmd, _config) when is_binary(cmd), do: ["sh", "-c", cmd]
 
   defp build_env_args(api_key, model, endpoint, agent_name, config) do
     # Values are passed as literal argv elements ("-e", "KEY=VALUE"); docker does

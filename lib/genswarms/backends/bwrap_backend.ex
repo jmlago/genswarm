@@ -92,6 +92,8 @@ defmodule Genswarms.Backends.BwrapBackend do
       {:ok, overlay_dir} ->
         # Copy DNS config to overlay's upper layer (required for network access)
         setup_dns_config(overlay_dir)
+        # Write the harness config (per-turn step budget) into the upper layer
+        setup_harness_config(overlay_dir, config)
 
         # Create cgroup scope for resource limits
         memory_limit = Map.get(config, :memory_limit, @default_memory_limit)
@@ -344,6 +346,25 @@ defmodule Genswarms.Backends.BwrapBackend do
     end
 
     :ok
+  end
+
+  @doc false
+  # Write the harness config file into the overlay's upper layer, where it
+  # materializes as $HOME/.subzeroclaw/config inside the sandbox (HOME=/root).
+  # Currently carries one knob: `max_turns` — subzeroclaw's per-turn step
+  # budget (genswarms#53 G3), integer-guarded. No max_turns ⇒ no file ⇒
+  # harness defaults (current behavior). Public for tests.
+  def setup_harness_config(overlay_dir, config) do
+    case Map.get(config, :max_turns) do
+      n when is_integer(n) and n > 0 ->
+        dir = Path.join([overlay_dir, "upper", "root", ".subzeroclaw"])
+        File.mkdir_p!(dir)
+        File.write!(Path.join(dir, "config"), "max_turns = #{n}\n")
+        :ok
+
+      _ ->
+        :ok
+    end
   end
 
   @doc false

@@ -55,6 +55,14 @@ defmodule Genswarms.Agents.AgentServer do
     reply_grace_ms: 1_000,
     turn_seq: 0,
     turn_sends: MapSet.new(),
+    # --- per-turn wall clock (genswarms#53 G3) ---
+    # `turn_timeout_ms` (agent config) bounds a single turn end-to-end. On
+    # expiry the turn is marked expired (telemetry :turn_timeout) and a LATE
+    # <<TURN_COMPLETE>> no longer auto-delivers its stale text. nil ⇒ off
+    # (default — current behavior).
+    turn_timeout_ms: nil,
+    turn_timer_ref: nil,
+    turn_expired: false,
     # --- async-reply ordering guard ---
     # When the agent has sent a message to an object that can reply (the object
     # is in the agent's incoming topology), we set awaiting_reply: true.  Any
@@ -242,7 +250,8 @@ defmodule Genswarms.Agents.AgentServer do
     # Backend keys control the execution environment (workspace, mounts, resources)
     # Domain keys are application-specific (population_size, max_iterations, etc.)
     backend_keys = ~w(workspace extra_path extra_ro_binds extra_rw_binds extra_env
-                      memory_limit cpu_shares tasks_max subzeroclaw_path presets network)a
+                      memory_limit cpu_shares tasks_max subzeroclaw_path presets network
+                      max_turns)a
 
     {backend_overrides, _domain_config} = Map.split(agent_config, backend_keys)
 
@@ -264,7 +273,9 @@ defmodule Genswarms.Agents.AgentServer do
       started_at: DateTime.utc_now(),
       # G2 opt-in: deliver each turn's final text to this object automatically.
       reply_to: agent_config |> Map.get(:reply_to) |> normalize_reply_to(),
-      reply_grace_ms: Map.get(agent_config, :reply_grace_ms, 1_000)
+      reply_grace_ms: Map.get(agent_config, :reply_grace_ms, 1_000),
+      # G3 opt-in: per-turn wall clock.
+      turn_timeout_ms: Map.get(agent_config, :turn_timeout_ms)
     }
 
     # Start backend asynchronously
@@ -381,6 +392,23 @@ defmodule Genswarms.Agents.AgentServer do
     else
       # Timer fired after clear_awaiting already ran; nothing to do.
       {:noreply, %{state | awaiting_timer_ref: nil}}
+    end
+  end
+
+  # G3: the per-turn wall clock fired. Only meaningful if the SAME turn is
+  # still running — a stale timer (the turn completed; a new one may even have
+  # started) is a no-op. The engine's job ends at making the timeout visible:
+  # it does not kill the backend (that policy belongs to the application).
+  def handle_info({:turn_timeout, seq}, state) do
+    if seq == state.turn_seq and state.state == :working do
+      Logger.warning(
+        "[#{state.swarm_name}/#{state.name}] Turn #{seq} exceeded #{state.turn_timeout_ms}ms wall clock — late output will not be auto-delivered"
+      )
+
+      emit_telemetry(:turn_timeout, state, %{turn: seq, timeout_ms: state.turn_timeout_ms})
+      {:noreply, %{state | turn_expired: true, turn_timer_ref: nil}}
+    else
+      {:noreply, state}
     end
   end
 
@@ -715,8 +743,9 @@ defmodule Genswarms.Agents.AgentServer do
 
   @impl true
   def terminate(_reason, state) do
-    # Clear any pending timer so it doesn't fire into a dead process.
+    # Clear any pending timers so they don't fire into a dead process.
     cancel_awaiting_timer(state.awaiting_timer_ref)
+    if state.turn_timer_ref, do: Process.cancel_timer(state.turn_timer_ref)
 
     if state.backend_ref do
       state.backend_module.stop(state.backend_ref)
@@ -829,6 +858,9 @@ defmodule Genswarms.Agents.AgentServer do
       # via note_agent_send/3.
       legacy_sends = for %{type: :send, to: to} <- messages, into: MapSet.new(), do: to
 
+      # The turn ended — its wall clock (if any) is done.
+      if state.turn_timer_ref, do: Process.cancel_timer(state.turn_timer_ref)
+
       new_state = %{
         state
         | buffer: "",
@@ -836,7 +868,8 @@ defmodule Genswarms.Agents.AgentServer do
           message_count: state.message_count + length(messages),
           history: history_entries ++ state.history,
           last_activity: DateTime.utc_now(),
-          turn_sends: MapSet.union(state.turn_sends, legacy_sends)
+          turn_sends: MapSet.union(state.turn_sends, legacy_sends),
+          turn_timer_ref: nil
       }
 
       # G2: schedule auto-delivery of this turn's reply text (only for a real
@@ -861,9 +894,24 @@ defmodule Genswarms.Agents.AgentServer do
 
   # A new piece of work is being handed to the backend: a new turn begins.
   # Bump the sequence (invalidates any pending auto-delivery from the previous
-  # turn) and forget the previous turn's explicit sends.
+  # turn), forget the previous turn's explicit sends, and arm the per-turn
+  # wall clock if configured.
   defp begin_turn(state) do
-    %{state | turn_seq: state.turn_seq + 1, turn_sends: MapSet.new()}
+    if state.turn_timer_ref, do: Process.cancel_timer(state.turn_timer_ref)
+    seq = state.turn_seq + 1
+
+    timer_ref =
+      if state.turn_timeout_ms do
+        Process.send_after(self(), {:turn_timeout, seq}, state.turn_timeout_ms)
+      end
+
+    %{
+      state
+      | turn_seq: seq,
+        turn_sends: MapSet.new(),
+        turn_timer_ref: timer_ref,
+        turn_expired: false
+    }
   end
 
   defp normalize_reply_to(nil), do: nil
@@ -878,6 +926,13 @@ defmodule Genswarms.Agents.AgentServer do
   # signal — emit no_final_text so the application can recover (re-prompt,
   # fallback); the engine's job is to make it visible, not to handle it.
   defp schedule_auto_deliver(%{reply_to: nil} = state, _raw_turn), do: state
+
+  # G3: the wall clock expired before this turn completed — its text answers a
+  # question the application has already recovered from. Discard, visibly.
+  defp schedule_auto_deliver(%{turn_expired: true} = state, _raw_turn) do
+    emit_telemetry(:auto_deliver_skipped, state, %{reason: :turn_expired, turn: state.turn_seq})
+    state
+  end
 
   defp schedule_auto_deliver(state, raw_turn) do
     case TurnOutput.reply_text(raw_turn) do
