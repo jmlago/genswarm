@@ -20,13 +20,15 @@ export SUBZEROCLAW_AGENT_NAME="$AGENT_NAME"
 FIFO_DIR=$(mktemp -d)
 INPUT_FIFO="$FIFO_DIR/input"
 OUTPUT_FIFO="$FIFO_DIR/output"
-mkfifo "$INPUT_FIFO" "$OUTPUT_FIFO"
+ERR_FIFO="$FIFO_DIR/err"
+mkfifo "$INPUT_FIFO" "$OUTPUT_FIFO" "$ERR_FIFO"
 
 # Cleanup on exit
 cleanup() {
     rm -rf "$FIFO_DIR"
     [ -n "$SZC_PID" ] && kill $SZC_PID 2>/dev/null
     [ -n "$OUTPUT_PID" ] && kill $OUTPUT_PID 2>/dev/null
+    [ -n "$ERR_PID" ] && kill $ERR_PID 2>/dev/null
 }
 trap cleanup EXIT
 
@@ -53,12 +55,26 @@ process_output() {
     done < "$OUTPUT_FIFO"
 }
 
-# Start output processor in background
+# Process stderr from subzeroclaw: tag it as {"type":"log"} instead of merging
+# it into stdout (the old 2>&1). Subzeroclaw's per-LLM-call banners and
+# diagnostics go to stderr; keeping them OUT of the "output" stream is what
+# lets the engine treat the turn's stdout as the model's actual text (reply
+# auto-delivery, genswarms#53 G2) — while the content still reaches the engine
+# (typed) for error detection and logging.
+process_err() {
+    while IFS= read -r line; do
+        echo "{\"type\":\"log\",\"content\":$(json_escape "$line")}"
+    done < "$ERR_FIFO"
+}
+
+# Start output processors in background
 process_output &
 OUTPUT_PID=$!
+process_err &
+ERR_PID=$!
 
 # Start subzeroclaw with FIFOs
-"$SZC_PATH" < "$INPUT_FIFO" > "$OUTPUT_FIFO" 2>&1 &
+"$SZC_PATH" < "$INPUT_FIFO" > "$OUTPUT_FIFO" 2> "$ERR_FIFO" &
 SZC_PID=$!
 
 # Open input FIFO for writing (this blocks until subzeroclaw opens it for reading)

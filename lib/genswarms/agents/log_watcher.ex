@@ -6,6 +6,7 @@ defmodule Genswarms.Agents.LogWatcher do
   use GenServer
   require Logger
 
+  alias Genswarms.Agents.AgentServer
   alias Genswarms.Agents.Ask
   alias Genswarms.Routing.Router
   alias Genswarms.Observability.LogStore
@@ -287,7 +288,11 @@ defmodule Genswarms.Agents.LogWatcher do
 
           {:ok, %{"to" => to, "content" => msg}} ->
             Logger.info("[#{state.swarm_name}/#{state.agent_name}] Outbox → #{to}")
-            Router.route(state.swarm_name, state.agent_name, String.to_atom(to), msg)
+            target = String.to_atom(to)
+            # Record the explicit send BEFORE routing so reply auto-delivery
+            # (G2) can never observe the route without the suppression mark.
+            AgentServer.note_agent_send(state.swarm_name, state.agent_name, target)
+            Router.route(state.swarm_name, state.agent_name, target, msg)
             File.rm(file_path)
 
           {:ok, %{"broadcast" => true, "content" => msg}} ->
