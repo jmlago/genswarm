@@ -15,19 +15,9 @@ defmodule Genswarms.Agents.TurnBoundsTest do
   alias Genswarms.Backends.{BwrapBackend, DockerBackend}
   alias Genswarms.CLI.SwarmRegistry
 
-  defmodule SinkHandler do
-    @behaviour Genswarms.Objects.ObjectHandler
-    @impl true
-    def init(config), do: {:ok, %{test_pid: Map.fetch!(config, :test_pid)}}
-    @impl true
-    def handle_message(from, content, state) do
-      send(state.test_pid, {:sink_got, from, content})
-      {:noreply, state}
-    end
+  alias Genswarms.Test.SinkHandler
 
-    @impl true
-    def interface(), do: %{}
-  end
+  import Genswarms.Test.SyncTurnHelpers
 
   # Stalls 1200ms before answering — long past the test's 200ms wall clock,
   # so the turn expires first and the late answer must NOT be delivered.
@@ -155,16 +145,4 @@ defmodule Genswarms.Agents.TurnBoundsTest do
     end
   end
 
-  defp wait_for_idle(swarm, agent, timeout_ms) do
-    deadline = System.monotonic_time(:millisecond) + timeout_ms
-
-    Stream.repeatedly(fn -> AgentServer.get_state(swarm, agent) end)
-    |> Enum.reduce_while(nil, fn s, _ ->
-      cond do
-        s == :idle -> {:halt, :ok}
-        System.monotonic_time(:millisecond) > deadline -> raise "agent never idle (#{s})"
-        true -> Process.sleep(20) && {:cont, nil}
-      end
-    end)
-  end
 end

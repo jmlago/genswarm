@@ -16,19 +16,9 @@ defmodule Genswarms.Agents.AutoDeliverTest do
   alias Genswarms.{SwarmManager, Agents.AgentServer}
   alias Genswarms.CLI.SwarmRegistry
 
-  defmodule SinkHandler do
-    @behaviour Genswarms.Objects.ObjectHandler
-    @impl true
-    def init(config), do: {:ok, %{test_pid: Map.fetch!(config, :test_pid)}}
-    @impl true
-    def handle_message(from, content, state) do
-      send(state.test_pid, {:sink_got, from, content})
-      {:noreply, state}
-    end
+  alias Genswarms.Test.SinkHandler
 
-    @impl true
-    def interface(), do: %{}
-  end
+  import Genswarms.Test.SyncTurnHelpers
 
   @fake_szc """
   #!/usr/bin/env bash
@@ -100,19 +90,6 @@ defmodule Genswarms.Agents.AutoDeliverTest do
     # Local backend starts asynchronously (:start_backend); wait for :idle.
     wait_for_idle(swarm, :writer, 5_000)
     swarm
-  end
-
-  defp wait_for_idle(swarm, agent, timeout_ms) do
-    deadline = System.monotonic_time(:millisecond) + timeout_ms
-
-    Stream.repeatedly(fn -> AgentServer.get_state(swarm, agent) end)
-    |> Enum.reduce_while(nil, fn s, _ ->
-      cond do
-        s == :idle -> {:halt, :ok}
-        System.monotonic_time(:millisecond) > deadline -> raise "agent never idle (#{s})"
-        true -> Process.sleep(20) && {:cont, nil}
-      end
-    end)
   end
 
   test "the turn's answer is auto-delivered to reply_to; banners and prompts are not",

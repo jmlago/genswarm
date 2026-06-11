@@ -56,23 +56,14 @@ defmodule Genswarms.Agents.AgentServerAsyncOrderingTest do
     Stream.repeatedly(fn -> AgentServer.get_state(swarm, agent) end)
     |> Enum.reduce_while(:timeout, fn state, _ ->
       cond do
-        state == expected ->
-          {:halt, :ok}
-
-        System.monotonic_time(:millisecond) > deadline ->
-          {:halt, :timeout}
-
-        true ->
-          Process.sleep(10)
-          {:cont, :timeout}
+        state == expected -> {:halt, :ok}
+        System.monotonic_time(:millisecond) > deadline -> {:halt, :timeout}
+        true -> Process.sleep(10); {:cont, :timeout}
       end
     end)
     |> case do
-      :ok ->
-        :ok
-
-      :timeout ->
-        raise "Agent #{agent} in #{swarm} did not reach #{expected} within #{timeout_ms}ms (last: #{AgentServer.get_state(swarm, agent)})"
+      :ok -> :ok
+      :timeout -> raise "Agent #{agent} in #{swarm} did not reach #{expected} within #{timeout_ms}ms (last: #{AgentServer.get_state(swarm, agent)})"
     end
   end
 
@@ -362,7 +353,6 @@ defmodule Genswarms.Agents.AgentServerAsyncOrderingTest do
       # :working state is the observable side-effect of the task being dispatched).
       status = AgentServer.get_status(swarm, agent_name())
       assert status.inbox_size == 0, "Queued task must be consumed from inbox"
-
       assert AgentServer.get_state(swarm, agent_name()) == :working,
              "Agent must transition to :working after dispatching the released task"
 
@@ -373,10 +363,8 @@ defmodule Genswarms.Agents.AgentServerAsyncOrderingTest do
       alias Genswarms.Agents.AgentProtocol
       direct_encoded = AgentProtocol.encode_task("the queued task")
       decoded = Jason.decode!(direct_encoded)
-
       assert decoded["type"] == "task",
              "encode_task must produce type=task, not type=message"
-
       assert decoded["content"] == "the queued task"
       assert decoded["from"] == "orchestrator"
     end
@@ -407,10 +395,8 @@ defmodule Genswarms.Agents.AgentServerAsyncOrderingTest do
 
       # 4. awaiting_reply must be cleared NOW (atomically by deliver_message).
       state = raw_state(swarm, agent_name())
-
       assert state.awaiting_reply == false,
              "deliver_message must clear awaiting_reply atomically"
-
       assert state.awaiting_timer_ref == nil
 
       # 5. The queued user task must still be in the inbox — it is NOT lost.
@@ -418,10 +404,8 @@ defmodule Genswarms.Agents.AgentServerAsyncOrderingTest do
       #    (The object reply itself was also pushed into the inbox, so size == 2.)
       inbox_contents = Inbox.to_list(state.inbox)
       task_entries = Enum.filter(inbox_contents, &Map.get(&1, :task?))
-
       assert length(task_entries) == 1,
              "The queued user task must still be present in the inbox (not dropped)"
-
       assert hd(task_entries).content == "task gated on reply"
     end
   end
