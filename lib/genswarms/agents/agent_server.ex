@@ -60,9 +60,12 @@ defmodule Genswarms.Agents.AgentServer do
     # during turn `turn_seq` ({:__broadcast__, seq} marks a broadcast, which
     # reaches the sink too if it's in the topology). Attribution is exact: the
     # synchronous outbox sweep at TURN_COMPLETE stamps turn N's sends with N
-    # even though the next turn may begin in the same handle_info. Pruned as
-    # pending deliveries consume them (bounded). Survives turn transitions by
-    # design — a pending delivery for turn N is checked after N+1 has begun.
+    # even though the next turn may begin in the same handle_info. Only
+    # maintained when reply_to is set (nothing consumes marks otherwise), and
+    # every mark is pruned once its turn's delivery decision is final — in
+    # the {:auto_deliver, ...} handler, or drop_own_turn_marks/1 on the skip
+    # paths — so the set stays bounded. Survives turn transitions by design —
+    # a pending delivery for turn N is checked after N+1 has begun.
     turn_sends: MapSet.new(),
     # --- per-turn wall clock (genswarms#53 G3) ---
     # `turn_timeout_ms` (agent config) bounds a single turn end-to-end. On
@@ -138,16 +141,6 @@ defmodule Genswarms.Agents.AgentServer do
   """
   def deliver_message(swarm_name, agent_name, from, content) do
     GenServer.cast(via_tuple(swarm_name, agent_name), {:deliver_message, from, content})
-  end
-
-  @doc """
-  Records that this agent explicitly sent a message to `to` during its current
-  turn (called by the LogWatcher when it routes an outbox send). Auto-delivery
-  consults this so an explicit `swarm-msg send <reply_to>` is never doubled by
-  the automatic one.
-  """
-  def note_agent_send(swarm_name, agent_name, to) do
-    GenServer.cast(via_tuple(swarm_name, agent_name), {:note_agent_send, to})
   end
 
   @doc """
@@ -317,7 +310,12 @@ defmodule Genswarms.Agents.AgentServer do
             swarm_name: state.swarm_name,
             agent_name: state.name,
             log_dir: log_dir,
-            workspace: Map.get(state.backend_config, :workspace)
+            workspace: Map.get(state.backend_config, :workspace),
+            # Accumulate poll-routed sends for the TURN_COMPLETE sweep only
+            # when something will actually sweep them: with reply_to off there
+            # is no auto-delivery to suppress and no sweep to clear the
+            # accumulator, so tracking would only leak.
+            track_sends: state.reply_to != nil
           )
 
         {:noreply,
@@ -370,6 +368,21 @@ defmodule Genswarms.Agents.AgentServer do
       buffer_tail: buffer_tail,
       level: :warning
     })
+
+    # Serial turns queue mid-turn tasks in the Inbox — a backend death strands
+    # them (a :stopped agent never dispatches again). The engine's job is to
+    # make that loss visible (review round 3 finding 3b); requeue/retry policy
+    # belongs to the application.
+    queued = Inbox.size(state.inbox)
+
+    if queued > 0 do
+      Logger.warning(
+        "[#{state.swarm_name}/#{state.name}] Backend exited with #{queued} queued task(s) " <>
+          "still in the inbox — they will never be dispatched"
+      )
+
+      emit_telemetry(:inbox_dropped, state, %{count: queued, exit_status: status})
+    end
 
     {:noreply, %{state | state: :stopped}}
   end
@@ -493,10 +506,12 @@ defmodule Genswarms.Agents.AgentServer do
 
             {:error, :inbox_full} ->
               Logger.warning(
-                "[#{state.swarm_name}/#{state.name}] Inbox full, dropping queued task"
+                "[#{state.swarm_name}/#{state.name}] Inbox full, refusing queued task"
               )
 
-              {:reply, :ok, state}
+              # Tell the caller the truth: an :ok here silently dropped the
+              # task (review round 3 finding 3a) and nobody could react.
+              {:reply, {:error, :inbox_full}, state}
           end
         else
           state = begin_turn(state)
@@ -733,13 +748,6 @@ defmodule Genswarms.Agents.AgentServer do
     {:noreply, %{state | awaiting_reply: false, awaiting_since: nil, awaiting_timer_ref: nil}}
   end
 
-  # Periodic-poll path: a send observed while the turn is still in flight
-  # belongs to the current turn (files that survive to the turn boundary are
-  # consumed by the synchronous sweep instead, with exact attribution).
-  def handle_cast({:note_agent_send, to}, state) do
-    {:noreply, %{state | turn_sends: MapSet.put(state.turn_sends, {to, state.turn_seq})}}
-  end
-
   # Answer to one of this agent's asks: write the envelope where the blocked
   # `swarm-msg ask` is polling. No state change — in particular this does NOT
   # touch awaiting_reply and does NOT inject a turn (that is the whole point
@@ -872,18 +880,26 @@ defmodule Genswarms.Agents.AgentServer do
 
       # This turn's explicit sends, with EXACT attribution to this turn's seq:
       #   - legacy stdout-protocol sends parsed above;
-      #   - outbox files swept SYNCHRONOUSLY right now — the agent cannot
-      #     write more files after emitting <<TURN_COMPLETE>>, so everything
-      #     on disk belongs to this turn. This is what makes auto-delivery
-      #     suppression independent of the watcher's poll latency (the racy
-      #     async note path only covers sends observed mid-turn).
-      legacy_sends = for %{type: :send, to: to} <- messages, do: {to, state.turn_seq}
-
-      swept_sends =
+      #   - outbox sends, ALL of them via the synchronous sweep: targets the
+      #     watcher's 500ms poll routed mid-turn (its accumulator) plus files
+      #     still on disk, drained right now. The agent cannot write more
+      #     files after emitting <<TURN_COMPLETE>> (it is blocked at the
+      #     prompt), so everything the sweep returns belongs to this turn —
+      #     attribution is independent of poll timing and involves no async
+      #     cast that could be processed after the next turn began and stamp
+      #     the wrong seq (review round 3 finding 1).
+      #
+      # Marks exist solely to suppress auto-delivery, so with reply_to off
+      # (the default) NOTHING ever consumes them — recording any would leak
+      # unboundedly (review round 3 finding 2). Same for non-working turns
+      # (startup banner / stale output): they never schedule a delivery.
+      new_marks =
         if working_turn? and state.reply_to != nil do
-          for to <- sweep_outbox(state), do: {to, state.turn_seq}
+          legacy = for %{type: :send, to: to} <- messages, do: {to, state.turn_seq}
+          swept = for to <- sweep_outbox(state), do: {to, state.turn_seq}
+          MapSet.new(legacy ++ swept)
         else
-          []
+          MapSet.new()
         end
 
       # The turn ended — its wall clock (if any) is done.
@@ -896,7 +912,7 @@ defmodule Genswarms.Agents.AgentServer do
           message_count: state.message_count + length(messages),
           history: history_entries ++ state.history,
           last_activity: DateTime.utc_now(),
-          turn_sends: MapSet.union(state.turn_sends, MapSet.new(legacy_sends ++ swept_sends)),
+          turn_sends: MapSet.union(state.turn_sends, new_marks),
           turn_timer_ref: nil
       }
 
@@ -949,16 +965,17 @@ defmodule Genswarms.Agents.AgentServer do
     end
   end
 
-  # Synchronously drain this agent's .outbox via its LogWatcher, returning the
-  # routed plain-send targets so the caller can stamp them with the turn they
-  # belong to. Best-effort: a dead/slow watcher degrades to the async note
-  # path rather than blocking the turn.
+  # Synchronously drain this agent's .outbox via its LogWatcher, returning
+  # this turn's routed plain-send targets (poll-accumulated + just drained) so
+  # the caller can stamp them with the turn they belong to. Best-effort: with
+  # a dead/slow watcher the turn proceeds without suppression marks — worst
+  # case a doubled reply, never a lost one.
   defp sweep_outbox(%{log_watcher: watcher} = state) when is_pid(watcher) do
     Genswarms.Agents.LogWatcher.sweep_outbox(watcher)
   catch
     kind, reason ->
       Logger.warning(
-        "[#{state.swarm_name}/#{state.name}] outbox sweep failed (#{kind}: #{inspect(reason)}) — falling back to async send notes"
+        "[#{state.swarm_name}/#{state.name}] outbox sweep failed (#{kind}: #{inspect(reason)}) — this turn's explicit sends will not suppress auto-delivery"
       )
 
       []
@@ -1026,19 +1043,41 @@ defmodule Genswarms.Agents.AgentServer do
   # question the application has already recovered from. Discard, visibly.
   defp schedule_auto_deliver(%{turn_expired: true} = state, _raw_turn) do
     emit_telemetry(:auto_deliver_skipped, state, %{reason: :turn_expired, turn: state.turn_seq})
-    state
+    drop_own_turn_marks(state)
   end
 
   defp schedule_auto_deliver(state, raw_turn) do
     case AgentProtocol.reply_text(raw_turn) do
       "" ->
         emit_telemetry(:no_final_text, state, %{turn: state.turn_seq})
-        state
+        drop_own_turn_marks(state)
 
       text ->
         Process.send_after(self(), {:auto_deliver, state.turn_seq, text}, state.reply_grace_ms)
         state
     end
+  end
+
+  # A turn whose delivery is SKIPPED (expired / no final text) never gets an
+  # {:auto_deliver, seq, …} message — the normal prune site — so its freshly
+  # stamped marks would sit in turn_sends forever (review round 3 finding 2).
+  # Drop exactly this turn's marks, here, because this is the moment the
+  # turn's delivery decision is final. Pruning anywhere broader is NOT safe:
+  # earlier turns' deliveries can still be pending right now (each fires at
+  # its own completion + grace, which lands after THIS turn's completion
+  # whenever grace exceeds the inter-turn gap), and begin_turn runs before
+  # the previous turn's grace elapses for the same reason — so neither may
+  # touch other turns' marks. The {:auto_deliver, seq} handler prunes
+  # s <= seq safely only because deliveries fire in seq order.
+  defp drop_own_turn_marks(state) do
+    seq = state.turn_seq
+
+    pruned =
+      state.turn_sends
+      |> Enum.reject(fn {_target, s} -> s == seq end)
+      |> MapSet.new()
+
+    %{state | turn_sends: pruned}
   end
 
   defp route_message(%{type: :send, to: to, content: content}, state) do

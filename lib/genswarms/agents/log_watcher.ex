@@ -6,7 +6,6 @@ defmodule Genswarms.Agents.LogWatcher do
   use GenServer
   require Logger
 
-  alias Genswarms.Agents.AgentServer
   alias Genswarms.Agents.Ask
   alias Genswarms.Routing.Router
   alias Genswarms.Observability.LogStore
@@ -19,20 +18,27 @@ defmodule Genswarms.Agents.LogWatcher do
 
   @doc """
   Synchronously drain the agent's `.outbox/` now, routing every pending file,
-  and return the targets of the plain sends that were routed (`:__broadcast__`
-  for broadcasts; asks are not included). Called by the AgentServer at
-  TURN_COMPLETE so the turn's explicit sends are attributed to the turn they
-  belong to — the agent cannot write more files after the turn marker, so
-  everything drained here is that turn's (this is what de-races auto-delivery
-  suppression from the 500ms poll).
+  and return the targets of ALL the plain sends routed this turn
+  (`:__broadcast__` for broadcasts; asks are not included): the targets the
+  500ms poll already routed since the previous sweep (the accumulator,
+  cleared here) plus the targets drained right now. Called by the AgentServer
+  at TURN_COMPLETE, which stamps every returned target with the COMPLETING
+  turn's seq — exact attribution, because the agent can only write outbox
+  files while its turn is running (it is blocked at the prompt otherwise), so
+  everything routed between turn start and TURN_COMPLETE belongs to that
+  turn. This replaces the old async `note_agent_send` cast, which the
+  AgentServer (blocked in this very call) could only process AFTER the
+  TURN_COMPLETE handler — by which time the next turn may have begun, so the
+  note stamped a FALSE mark on the wrong turn and its legitimate reply was
+  silently suppressed (review round 3 finding 1).
 
   INVARIANT — this is the only synchronous edge in the otherwise all-cast
   Router↔AgentServer↔LogWatcher cycle, and it is safe ONLY while it stays
   one-directional: LogWatcher (including everything reachable from its outbox
-  processing: `Router.route/ask`, delivery casts, `note_agent_send`) must
-  NEVER `GenServer.call` back into the AgentServer, which is blocked inside
-  this call. Turning any of those casts into a call deadlocks the agent at
-  every TURN_COMPLETE.
+  processing: `Router.route/ask` and delivery casts) must NEVER
+  `GenServer.call` back into the AgentServer, which is blocked inside this
+  call. Turning any of those casts into a call deadlocks the agent at every
+  TURN_COMPLETE.
   """
   def sweep_outbox(pid, timeout \\ 4_000) do
     GenServer.call(pid, :sweep_outbox, timeout)
@@ -49,6 +55,12 @@ defmodule Genswarms.Agents.LogWatcher do
       agent_name: agent_name,
       log_dir: log_dir,
       workspace: workspace,
+      # Plain-send targets the poll path routed since the last sweep, oldest
+      # first. Only maintained when the AgentServer actually sweeps (it does
+      # iff reply_to is configured — track_sends mirrors that), otherwise the
+      # accumulator would grow with no reader.
+      track_sends: Keyword.get(opts, :track_sends, false),
+      routed_since_sweep: [],
       last_positions: %{}
     }
 
@@ -64,7 +76,7 @@ defmodule Genswarms.Agents.LogWatcher do
 
   def handle_call(:sweep_outbox, _from, state) do
     {targets, new_state} = drain_outbox(state)
-    {:reply, targets, new_state}
+    {:reply, state.routed_since_sweep ++ targets, %{new_state | routed_since_sweep: []}}
   end
 
   defp poll_logs(state) do
@@ -263,8 +275,17 @@ defmodule Genswarms.Agents.LogWatcher do
   # This eliminates the need for swarm-msg send in agent skills.
 
   defp poll_outbox(state) do
-    {_targets, new_state} = drain_outbox(state)
-    new_state
+    {targets, new_state} = drain_outbox(state)
+
+    # Mid-turn sends drained by the poll still belong to the in-flight turn —
+    # remember them so the TURN_COMPLETE sweep can hand them to the
+    # AgentServer for stamping with the correct seq (no async cast; see
+    # sweep_outbox/2).
+    if new_state.track_sends do
+      %{new_state | routed_since_sweep: new_state.routed_since_sweep ++ targets}
+    else
+      new_state
+    end
   end
 
   # Drain every pending outbox file, returning the routed targets
@@ -314,10 +335,14 @@ defmodule Genswarms.Agents.LogWatcher do
           # Routed via Router.ask so the object's reply is written to the
           # caller's reply file instead of arriving as a new turn. This clause
           # must precede the plain send clause (an ask also has to/content).
-          # The correlation id crossed the sandbox boundary — validate it
-          # before it can become a file name (path traversal).
+          # `"reply_to": null` is NOT an ask — pre-existing writers emit the
+          # field on plain sends — so nil falls through to the plain-send
+          # clause below instead of being dropped as an invalid ask (review
+          # round 3 finding 4). The correlation id crossed the sandbox
+          # boundary — validate it before it can become a file name (path
+          # traversal).
           {:ok, %{"to" => to, "content" => msg, "reply_to" => corr}}
-          when is_binary(to) and is_binary(msg) ->
+          when is_binary(to) and is_binary(msg) and not is_nil(corr) ->
             if Ask.valid_correlation_id?(corr) do
               Logger.info("[#{state.swarm_name}/#{state.agent_name}] Outbox ask → #{to}")
               Router.ask(state.swarm_name, state.agent_name, String.to_atom(to), msg, corr)
@@ -333,9 +358,6 @@ defmodule Genswarms.Agents.LogWatcher do
           {:ok, %{"to" => to, "content" => msg}} when is_binary(to) and is_binary(msg) ->
             Logger.info("[#{state.swarm_name}/#{state.agent_name}] Outbox → #{to}")
             target = String.to_atom(to)
-            # Record the explicit send BEFORE routing so reply auto-delivery
-            # (G2) can never observe the route without the suppression mark.
-            AgentServer.note_agent_send(state.swarm_name, state.agent_name, target)
             Router.route(state.swarm_name, state.agent_name, target, msg)
             File.rm(file_path)
             {:routed, target}
@@ -343,8 +365,8 @@ defmodule Genswarms.Agents.LogWatcher do
           {:ok, %{"broadcast" => true, "content" => msg}} when is_binary(msg) ->
             Logger.info("[#{state.swarm_name}/#{state.agent_name}] Outbox broadcast")
             # A broadcast reaches the reply sink too (if it's in the topology),
-            # so it counts as an explicit send for auto-delivery suppression.
-            AgentServer.note_agent_send(state.swarm_name, state.agent_name, :__broadcast__)
+            # so it counts as an explicit send for auto-delivery suppression
+            # (the :__broadcast__ wildcard the AgentServer checks).
             Router.broadcast(state.swarm_name, state.agent_name, msg)
             File.rm(file_path)
             {:routed, :__broadcast__}

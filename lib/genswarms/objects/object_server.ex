@@ -706,6 +706,21 @@ defmodule Genswarms.Objects.ObjectServer do
           )
 
           {{:handler_error, Exception.message(e)}, state.handler_state}
+      catch
+        # rescue only covers raises — a throw would bubble to gen_server as a
+        # bad return value and an exit would stop this ObjectServer, both
+        # stranding the asker (review round 3 finding 5). Same typed envelope.
+        :throw, value ->
+          Logger.error("[#{state.swarm_name}/#{state.name}] ask handler threw: #{inspect(value)}")
+
+          {{:handler_error, "handler threw: #{inspect(value)}"}, state.handler_state}
+
+        :exit, reason ->
+          Logger.error(
+            "[#{state.swarm_name}/#{state.name}] ask handler exited: #{inspect(reason)}"
+          )
+
+          {{:handler_error, "handler exited: #{inspect(reason)}"}, state.handler_state}
       end
 
     duration_ms = System.monotonic_time(:millisecond) - started

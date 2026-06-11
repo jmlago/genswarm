@@ -107,8 +107,15 @@ parse_send_args() {
         exit 1
     fi
 
+    # Fail fast on a missing -f file: silently skipping it would send an
+    # empty (or message-only) payload the caller never wrote.
+    if [ -n "$file" ] && [ ! -f "$file" ]; then
+        echo "Error: File not found: $file" >&2
+        exit 1
+    fi
+
     content="$message"
-    if [ -n "$file" ] && [ -f "$file" ]; then
+    if [ -n "$file" ]; then
         if [ -n "$message" ]; then
             content="${message}
 

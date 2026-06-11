@@ -225,9 +225,9 @@ defmodule Genswarms.Agents.Ask do
     code = err_field(err, :code, "error")
 
     %{
-      code: to_string(code),
-      message: to_string(err_field(err, :message, code)),
-      type: to_string(err_field(err, :type, "unknown"))
+      code: stringify(code),
+      message: stringify(err_field(err, :message, code)),
+      type: stringify(err_field(err, :type, "unknown"))
     }
   end
 
@@ -239,4 +239,15 @@ defmodule Genswarms.Agents.Ask do
 
   defp err_field(map, key, default),
     do: Map.get(map, to_string(key), Map.get(map, key, default))
+
+  # Error fields come from the OBJECT's reply — nothing guarantees they are
+  # strings ({"error":{"code":{"upstream":502}}} is real upstream output).
+  # to_string/1 raises Protocol.UndefinedError on maps/lists, and this runs
+  # OUTSIDE the object server's handler rescue, so it crashed the ObjectServer
+  # and stranded the asker (review round 3 finding 5). Binaries pass through;
+  # atoms keep their historical to_string form (:permanent → "permanent",
+  # nil → ""); everything else is inspected.
+  defp stringify(v) when is_binary(v), do: v
+  defp stringify(v) when is_atom(v), do: to_string(v)
+  defp stringify(v), do: inspect(v)
 end

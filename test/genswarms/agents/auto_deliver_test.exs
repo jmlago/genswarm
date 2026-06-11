@@ -20,22 +20,41 @@ defmodule Genswarms.Agents.AutoDeliverTest do
 
   import Genswarms.Test.SyncTurnHelpers
 
-  @fake_szc """
-  #!/usr/bin/env bash
-  # Fake subzeroclaw: same I/O contract as the real harness.
-  # SILENT → no stdout answer; SLOW → 600ms of "thinking" before answering.
-  while IFS= read -r -d '' turn; do
-    printf '[1] fake-model...\\n' >&2
-    case "$turn" in
-      *SLOW*) sleep 0.6 ;;
-    esac
-    case "$turn" in
-      *SILENT*) : ;;
-      *) printf 'ANSWER to: %s\\n' "$turn" ;;
-    esac
-    printf '\\n<<TURN_COMPLETE>>\\n> '
-  done
-  """
+  # Fake subzeroclaw: same I/O contract as the real harness. The workspace is
+  # interpolated so SENDLATE/SENDSILENT can write a real .outbox file from
+  # INSIDE the (fake) agent process, exactly like swarm-msg send does.
+  #   SILENT     → no stdout answer
+  #   SLOW       → 600ms of "thinking" before answering
+  #   SENDLATE   → write an explicit outbox send IMMEDIATELY before the turn
+  #                marker, so only the synchronous TURN_COMPLETE sweep can
+  #                attribute it (the 500ms poll cannot win that race) — the
+  #                sweep path of review round 3 finding 1
+  #   SENDSILENT → the same late outbox write, but no stdout answer at all
+  #                (the no_final_text path)
+  defp fake_szc(ws) do
+    """
+    #!/usr/bin/env bash
+    while IFS= read -r -d '' turn; do
+      printf '[1] fake-model...\\n' >&2
+      case "$turn" in
+        *SLOW*) sleep 0.6 ;;
+      esac
+      case "$turn" in
+        *SENDLATE*|*SENDSILENT*)
+          sleep 0.4
+          mkdir -p "#{ws}/.outbox"
+          printf '{"to":"sink","content":"EXPLICIT REPLY"}' > "#{ws}/.outbox/.tmp1"
+          mv "#{ws}/.outbox/.tmp1" "#{ws}/.outbox/0001_sink_explicit.json"
+          ;;
+      esac
+      case "$turn" in
+        *SILENT*) : ;;
+        *) printf 'ANSWER to: %s\\n' "$turn" ;;
+      esac
+      printf '\\n<<TURN_COMPLETE>>\\n> '
+    done
+    """
+  end
 
   setup do
     if System.find_executable("bash") == nil or System.find_executable("jq") == nil do
@@ -47,15 +66,27 @@ defmodule Genswarms.Agents.AutoDeliverTest do
     File.mkdir_p!(workspace)
 
     fixture = Path.join(base, "fake_szc.sh")
-    File.write!(fixture, @fake_szc)
+    File.write!(fixture, fake_szc(workspace))
     File.chmod!(fixture, 0o755)
 
     on_exit(fn -> File.rm_rf(base) end)
     {:ok, workspace: workspace, fixture: fixture}
   end
 
-  defp start_swarm(workspace, fixture, test_pid, grace_ms) do
+  defp start_swarm(workspace, fixture, test_pid, grace_ms, opts \\ []) do
     swarm = "autodel-#{System.unique_integer([:positive])}"
+
+    agent_config = %{
+      workspace: workspace,
+      subzeroclaw_path: fixture,
+      reply_grace_ms: grace_ms
+    }
+
+    agent_config =
+      case Keyword.get(opts, :reply_to, :sink) do
+        nil -> agent_config
+        sink -> Map.put(agent_config, :reply_to, sink)
+      end
 
     config = %{
       name: swarm,
@@ -63,12 +94,7 @@ defmodule Genswarms.Agents.AutoDeliverTest do
         %{
           name: :writer,
           backend: :local,
-          config: %{
-            workspace: workspace,
-            subzeroclaw_path: fixture,
-            reply_to: :sink,
-            reply_grace_ms: grace_ms
-          }
+          config: agent_config
         }
       ],
       objects: [
@@ -160,34 +186,46 @@ defmodule Genswarms.Agents.AutoDeliverTest do
     refute_receive {:sink_got, _, _}, 500
   end
 
-  test "BLOCKER regression: explicit send during turn N + queued follow-up — N is suppressed, N+1 still delivers",
+  test "an explicit send written immediately before TURN_COMPLETE (sweep path) suppresses turn N",
        %{workspace: ws, fixture: fixture} do
-    # The adversarial review's headline finding: with seq-at-noting-time
-    # attribution, the explicit send written late in turn N got stamped with
-    # N+1 (the follow-up had already begun a new turn), suppressing the
-    # FOLLOW-UP's legitimate answer. Exact stamping via the synchronous sweep
-    # fixes the attribution; serial turns fix the dispatch accounting.
+    # The outbox file lands milliseconds before the turn marker, so the 500ms
+    # poll cannot drain it first — the synchronous TURN_COMPLETE sweep must be
+    # what routes AND attributes it. (The old version of this test wrote the
+    # file ~450ms before turn end, so the poll usually won and the sweep path
+    # went untested — review round 3 finding 8.)
     swarm = start_swarm(ws, fixture, self(), 300)
 
-    :ok = AgentServer.send_task(swarm, :writer, "SLOW first")
-    # While turn 1 is still thinking: the agent explicitly replies via outbox,
-    # and the user sends a follow-up (which must QUEUE, not pipeline).
-    Process.sleep(150)
-    outbox = Path.join(ws, ".outbox")
-    File.mkdir_p!(outbox)
+    :ok = AgentServer.send_task(swarm, :writer, "SENDLATE first")
 
-    File.write!(
-      Path.join(outbox, "0001_sink_explicit.json"),
-      Jason.encode!(%{to: "sink", content: "EXPLICIT REPLY"})
-    )
+    # The explicit reply arrives (routed by the sweep)...
+    assert_receive {:sink_got, :writer, "EXPLICIT REPLY"}, 8_000
+    # ...and turn 1's auto-delivery is suppressed in its favor.
+    refute_receive {:sink_got, _, _}, 800
+  end
 
+  test "BLOCKER regression (review round 3 finding 1): sweep-routed send during turn N + queued follow-up — N suppressed, N+1 still delivers",
+       %{workspace: ws, fixture: fixture} do
+    # Turn N explicit-sends to the sink JUST BEFORE <<TURN_COMPLETE>>, with a
+    # follow-up already queued (serial turns). The TURN_COMPLETE handler runs
+    # the sweep AND dispatches the queued task in the same handle_info. With
+    # the old async note_agent_send cast, the note was processed AFTER the
+    # turn_seq bump for N+1, stamping a FALSE {sink, N+1} mark — turn N+1's
+    # legitimate answer was silently swallowed as :explicit_send. The sweep
+    # return value (plus the poll-path accumulator) is now the ONLY mark
+    # source, stamped synchronously with the completing turn's seq.
+    swarm = start_swarm(ws, fixture, self(), 300)
+
+    :ok = AgentServer.send_task(swarm, :writer, "SENDLATE first")
+    # Queue the follow-up while turn 1 is still thinking (it must QUEUE, not
+    # pipeline) — it is dispatched in turn 1's TURN_COMPLETE handler.
+    Process.sleep(120)
     :ok = AgentServer.send_task(swarm, :writer, "second")
 
     # The explicit reply arrives, turn 1's auto-delivery is suppressed in its
     # favor — and turn 2's answer is NOT collateral damage.
     assert_receive {:sink_got, :writer, "EXPLICIT REPLY"}, 8_000
     assert_receive {:sink_got, :writer, "ANSWER to: [From orchestrator] second"}, 8_000
-    refute_receive {:sink_got, _, "ANSWER to: [From orchestrator] SLOW first"}, 600
+    refute_receive {:sink_got, _, "ANSWER to: [From orchestrator] SENDLATE first"}, 600
   end
 
   test "a broadcast during the turn also counts as an explicit send (no double delivery)",
@@ -210,13 +248,17 @@ defmodule Genswarms.Agents.AutoDeliverTest do
     refute_receive {:sink_got, _, "ANSWER to: [From orchestrator] SLOW bb"}, 600
   end
 
-  test "an explicit outbox send to the sink suppresses the automatic delivery",
+  test "an explicit outbox send drained by the 500ms poll mid-turn suppresses the automatic delivery",
        %{workspace: ws, fixture: fixture} do
-    # Long grace: the LogWatcher polls .outbox every 500ms, and the explicit
-    # send must be noted before the grace elapses.
+    # The file is written ~450ms before the SLOW turn ends, so the watcher's
+    # poll (not the sweep) usually routes it — it must be accumulated and
+    # handed back by the TURN_COMPLETE sweep for exact attribution. (A real
+    # agent can only write .outbox files DURING its turn — its process is
+    # blocked at the prompt afterwards — so the file goes in mid-turn here.)
     swarm = start_swarm(ws, fixture, self(), 1_500)
 
-    :ok = AgentServer.send_task(swarm, :writer, "with explicit send")
+    :ok = AgentServer.send_task(swarm, :writer, "SLOW with explicit send")
+    Process.sleep(150)
 
     # Simulate the agent's own `swarm-msg send sink` during the turn.
     outbox = Path.join(ws, ".outbox")
@@ -231,5 +273,57 @@ defmodule Genswarms.Agents.AutoDeliverTest do
     assert_receive {:sink_got, :writer, "EXPLICIT REPLY"}, 8_000
     # ...and the automatic delivery is suppressed (grace expires silently).
     refute_receive {:sink_got, _, _}, 2_500
+  end
+
+  # ── turn_sends bookkeeping bounds (review round 3 finding 2) ───────────────
+
+  defp turn_sends(swarm) do
+    :sys.get_state(AgentServer.via_tuple(swarm, :writer)).turn_sends
+  end
+
+  test "no reply_to ⇒ no turn_sends marks are ever recorded (default deployments don't leak)",
+       %{workspace: ws, fixture: fixture} do
+    # With reply_to nil there is no auto-delivery to suppress, so any mark
+    # recorded is pure leak: nothing ever consumed them (the only prune site
+    # was the {:auto_deliver, ...} handler, which never runs).
+    swarm = start_swarm(ws, fixture, self(), 100, reply_to: nil)
+
+    for i <- 1..3 do
+      :ok = AgentServer.send_task(swarm, :writer, "SLOW task #{i}")
+      Process.sleep(150)
+
+      File.mkdir_p!(Path.join(ws, ".outbox"))
+
+      File.write!(
+        Path.join(ws, ".outbox/000#{i}_sink.json"),
+        Jason.encode!(%{to: "sink", content: "send #{i}"})
+      )
+
+      # the explicit send still routes normally
+      assert_receive {:sink_got, :writer, "send " <> _}, 8_000
+      wait_for_idle(swarm, :writer, 5_000)
+    end
+
+    assert turn_sends(swarm) == MapSet.new()
+
+    # ...and the watcher's poll-path accumulator (never swept when reply_to is
+    # off) must not be quietly growing in the AgentServer's stead.
+    watcher = :sys.get_state(AgentServer.via_tuple(swarm, :writer)).log_watcher
+    assert :sys.get_state(watcher).routed_since_sweep == []
+  end
+
+  test "a no_final_text turn prunes its own marks (explicit send + silent turn does not leak)",
+       %{workspace: ws, fixture: fixture} do
+    # SENDSILENT: the turn explicit-sends but produces no stdout answer, so no
+    # {:auto_deliver, ...} is ever scheduled — the previous prune site. The
+    # skip path itself must discard the turn's marks.
+    swarm = start_swarm(ws, fixture, self(), 100)
+
+    :ok = AgentServer.send_task(swarm, :writer, "SENDSILENT one")
+    assert_receive {:sink_got, :writer, "EXPLICIT REPLY"}, 8_000
+    wait_for_idle(swarm, :writer, 5_000)
+
+    assert turn_sends(swarm) == MapSet.new()
+    refute_receive {:sink_got, _, _}, 500
   end
 end

@@ -96,6 +96,29 @@ defmodule Genswarms.Agents.AskTest do
       assert {:ok, _} = Jason.encode(Ask.envelope(~s({"a":1}), "c6", 2))
       assert {:ok, _} = Jason.encode(Ask.error_envelope("c7", "route_denied", "no edge"))
     end
+
+    test "non-stringable error fields are inspected, never raised on (review round 3 finding 5)" do
+      # to_string/1 on a map/list raises Protocol.UndefinedError — and this
+      # normalization runs OUTSIDE the object server's handler rescue, so a
+      # reply like {"error":{"code":{"upstream":...}}} crashed the
+      # ObjectServer and stranded the asker.
+      env = Ask.envelope(~s({"error":{"code":{"upstream":502},"message":["a","b"]}}), "cns1", 1)
+
+      assert env.ok == false
+      assert env.error.code == inspect(%{"upstream" => 502})
+      assert env.error.message == inspect(["a", "b"])
+      assert env.error.type == "unknown"
+      assert {:ok, _} = Jason.encode(env)
+
+      # message defaults to the (non-stringable) code when absent
+      env2 = Ask.envelope(%{"error" => %{"code" => %{"k" => 1}}}, "cns2", 1)
+      assert env2.error.message == inspect(%{"k" => 1})
+
+      # binaries still pass through untouched; atoms keep their to_string form
+      env3 = Ask.envelope(%{"error" => %{"code" => "nope", "type" => :permanent}}, "cns3", 1)
+      assert env3.error.code == "nope"
+      assert env3.error.type == "permanent"
+    end
   end
 
   describe "error_envelope/4" do
