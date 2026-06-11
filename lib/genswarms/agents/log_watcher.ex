@@ -25,6 +25,14 @@ defmodule Genswarms.Agents.LogWatcher do
   belong to — the agent cannot write more files after the turn marker, so
   everything drained here is that turn's (this is what de-races auto-delivery
   suppression from the 500ms poll).
+
+  INVARIANT — this is the only synchronous edge in the otherwise all-cast
+  Router↔AgentServer↔LogWatcher cycle, and it is safe ONLY while it stays
+  one-directional: LogWatcher (including everything reachable from its outbox
+  processing: `Router.route/ask`, delivery casts, `note_agent_send`) must
+  NEVER `GenServer.call` back into the AgentServer, which is blocked inside
+  this call. Turning any of those casts into a call deadlocks the agent at
+  every TURN_COMPLETE.
   """
   def sweep_outbox(pid, timeout \\ 4_000) do
     GenServer.call(pid, :sweep_outbox, timeout)

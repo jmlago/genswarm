@@ -98,6 +98,14 @@ defmodule Genswarms.Routing.Router do
   guard against), and every failure (unknown swarm, denied route, missing or
   non-object target) is answered with an `ok: false` envelope rather than a
   silent drop, so the asker never waits out its timeout for a knowable error.
+
+  Interaction contract with the async mode: ask and the awaiting-reply gate
+  are independent organs of two different modes. An agent MAY ask while its
+  awaiting flag is set (the sync reply file is invisible to the gate), an ask
+  neither sets nor clears the flag, and a `send` and an `ask` in the same
+  turn do not interfere — the send takes the async path (guard applies), the
+  ask takes this one. Neither mode may borrow the other's correlation
+  mechanism: envelopes answer asks, turn injection answers sends.
   """
   @spec ask(String.t(), atom(), atom(), String.t(), String.t()) :: :ok
   def ask(swarm_name, from, to, content, correlation_id) do
