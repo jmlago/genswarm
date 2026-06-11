@@ -896,7 +896,9 @@ defmodule Genswarms.Agents.AgentServer do
   # Parse subzeroclaw log file format
   # Format: [timestamp] ROLE: content
   # Roles: USER, TOOL, RES, ASST, COMPACT, SYS
-  defp parse_subzeroclaw_log(content, session_id) do
+  @doc false
+  # Public for tests — pure transformation of a subzeroclaw log file into entries.
+  def parse_subzeroclaw_log(content, session_id) do
     lines = String.split(content, "\n")
 
     # Skip header line (=== session_id timestamp)
@@ -912,13 +914,16 @@ defmodule Genswarms.Agents.AgentServer do
     # Try to match [timestamp] ROLE: content
     case Regex.run(~r/^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\] (\w+): (.*)$/, line) do
       [_, timestamp, role, content] ->
-        # Collect continuation lines (lines that don't start with [timestamp])
+        # Collect continuation lines: everything up to the next roled line. An
+        # entry's body may itself contain blank lines (the SYSTEM entry is the
+        # base prompt + skill blocks separated by blank lines) — stopping at ""
+        # truncated the entry there and silently dropped the rest of its lines.
         {continuation, remaining} =
           Enum.split_while(rest, fn l ->
-            not Regex.match?(~r/^\[\d{4}-\d{2}-\d{2}/, l) and l != ""
+            not Regex.match?(~r/^\[\d{4}-\d{2}-\d{2}/, l)
           end)
 
-        full_content = [content | continuation] |> Enum.join("\n")
+        full_content = [content | continuation] |> Enum.join("\n") |> String.trim_trailing()
 
         entry = %{
           session_id: session_id,
