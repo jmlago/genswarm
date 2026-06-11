@@ -369,6 +369,21 @@ defmodule Genswarms.Agents.AgentServer do
       level: :warning
     })
 
+    # Serial turns queue mid-turn tasks in the Inbox — a backend death strands
+    # them (a :stopped agent never dispatches again). The engine's job is to
+    # make that loss visible (review round 3 finding 3b); requeue/retry policy
+    # belongs to the application.
+    queued = Inbox.size(state.inbox)
+
+    if queued > 0 do
+      Logger.warning(
+        "[#{state.swarm_name}/#{state.name}] Backend exited with #{queued} queued task(s) " <>
+          "still in the inbox — they will never be dispatched"
+      )
+
+      emit_telemetry(:inbox_dropped, state, %{count: queued, exit_status: status})
+    end
+
     {:noreply, %{state | state: :stopped}}
   end
 
@@ -491,10 +506,12 @@ defmodule Genswarms.Agents.AgentServer do
 
             {:error, :inbox_full} ->
               Logger.warning(
-                "[#{state.swarm_name}/#{state.name}] Inbox full, dropping queued task"
+                "[#{state.swarm_name}/#{state.name}] Inbox full, refusing queued task"
               )
 
-              {:reply, :ok, state}
+              # Tell the caller the truth: an :ok here silently dropped the
+              # task (review round 3 finding 3a) and nobody could react.
+              {:reply, {:error, :inbox_full}, state}
           end
         else
           state = begin_turn(state)
