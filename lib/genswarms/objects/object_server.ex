@@ -603,31 +603,20 @@ defmodule Genswarms.Objects.ObjectServer do
 
   # Private functions - Native mode
 
-  defp handle_native_message(from, content, state) do
-    case state.handler.handle_message(from, content, state.handler_state) do
+  # The single dispatcher for every ObjectHandler return shape, shared by the
+  # async message path and the ask path. A {:reply, …} payload is RETURNED
+  # (tagged) rather than acted on — the caller decides what a reply means in
+  # its mode: async routes it back to the sender, ask wraps it in the reply
+  # envelope. Every other shape performs its side effects here, exactly once,
+  # so a future return shape is added in one place.
+  defp dispatch_handler_return(result, state) do
+    case result do
       {:reply, response, handler_state} ->
-        route_message(state.swarm_name, state.name, from, response)
-
-        new_state = %{
-          state
-          | handler_state: handler_state,
-            state: :idle,
-            message_count: state.message_count + 1
-        }
-
-        {:noreply, new_state}
+        {{:reply, response}, handler_state}
 
       {:send, to, message, handler_state} ->
         route_message(state.swarm_name, state.name, to, message)
-
-        new_state = %{
-          state
-          | handler_state: handler_state,
-            state: :idle,
-            message_count: state.message_count + 1
-        }
-
-        {:noreply, new_state}
+        {nil, handler_state}
 
       {:broadcast, message, handler_state} ->
         content_preview =
@@ -644,44 +633,19 @@ defmodule Genswarms.Objects.ObjectServer do
         )
 
         Router.broadcast(state.swarm_name, state.name, message)
-
-        new_state = %{
-          state
-          | handler_state: handler_state,
-            state: :idle,
-            message_count: state.message_count + 1
-        }
-
-        {:noreply, new_state}
+        {nil, handler_state}
 
       {:noreply, handler_state} ->
-        new_state = %{
-          state
-          | handler_state: handler_state,
-            state: :idle,
-            message_count: state.message_count + 1
-        }
-
-        {:noreply, new_state}
+        {nil, handler_state}
 
       {:multi, messages, handler_state} ->
         # Send multiple messages (tagged format)
         Enum.each(messages, fn
-          {:send, to, msg} ->
-            route_message(state.swarm_name, state.name, to, msg)
-
-          {:broadcast, msg} ->
-            Router.broadcast(state.swarm_name, state.name, msg)
+          {:send, to, msg} -> route_message(state.swarm_name, state.name, to, msg)
+          {:broadcast, msg} -> Router.broadcast(state.swarm_name, state.name, msg)
         end)
 
-        new_state = %{
-          state
-          | handler_state: handler_state,
-            state: :idle,
-            message_count: state.message_count + 1
-        }
-
-        {:noreply, new_state}
+        {nil, handler_state}
 
       {:send_many, messages, handler_state} ->
         # Send multiple messages (keyword/tuple format: [{target, msg}, ...])
@@ -691,33 +655,52 @@ defmodule Genswarms.Objects.ObjectServer do
           {to, msg} -> route_message(state.swarm_name, state.name, to, msg)
         end)
 
-        new_state = %{
-          state
-          | handler_state: handler_state,
-            state: :idle,
-            message_count: state.message_count + 1
-        }
-
-        {:noreply, new_state}
+        {nil, handler_state}
     end
   end
 
-  # The ask variant of handle_native_message: the handler runs identically, but
-  # a {:reply, …} becomes a typed envelope written to the asker's reply file
+  defp handle_native_message(from, content, state) do
+    {reply, handler_state} =
+      dispatch_handler_return(
+        state.handler.handle_message(from, content, state.handler_state),
+        state
+      )
+
+    case reply do
+      {:reply, response} -> route_message(state.swarm_name, state.name, from, response)
+      nil -> :ok
+    end
+
+    {:noreply,
+     %{
+       state
+       | handler_state: handler_state,
+         state: :idle,
+         message_count: state.message_count + 1
+     }}
+  end
+
+  # The ask variant: the handler and dispatcher run identically, but a
+  # {:reply, …} becomes a typed envelope written to the asker's reply file
   # instead of a routed message, and every non-reply shape still acknowledges
   # the ask (result: nil) after performing its usual side effects — the blocked
   # asker never waits out its timeout for a handler that already finished.
   defp handle_native_ask(from, content, corr, state) do
     started = System.monotonic_time(:millisecond)
 
-    {response, handler_state} =
+    {reply, handler_state} =
       try do
-        run_ask_handler(from, content, state)
+        dispatch_handler_return(
+          state.handler.handle_message(from, content, state.handler_state),
+          state
+        )
       rescue
         e ->
-          # A raising handler must not strand the asker for its full timeout
-          # (nor crash this object): answer with a typed error. The handler
-          # state is unchanged — the failed call never produced a new one.
+          # A raising handler — or one returning an unknown shape, which
+          # CaseClauseErrors in the dispatcher — must not strand the asker for
+          # its full timeout (nor crash this object): answer with a typed
+          # error. The handler state is unchanged — the failed call never
+          # produced a new one.
           Logger.error(
             "[#{state.swarm_name}/#{state.name}] ask handler raised: #{Exception.message(e)}"
           )
@@ -728,12 +711,15 @@ defmodule Genswarms.Objects.ObjectServer do
     duration_ms = System.monotonic_time(:millisecond) - started
 
     envelope =
-      case response do
+      case reply do
         {:handler_error, message} ->
           Ask.error_envelope(corr, "handler_error", message, "unknown")
 
-        response ->
+        {:reply, response} ->
           Ask.envelope(response, corr, duration_ms)
+
+        nil ->
+          Ask.envelope(nil, corr, duration_ms)
       end
 
     ask_reply(state, from, corr, envelope)
@@ -745,46 +731,6 @@ defmodule Genswarms.Objects.ObjectServer do
          state: :idle,
          message_count: state.message_count + 1
      }}
-  end
-
-  defp run_ask_handler(from, content, state) do
-    case state.handler.handle_message(from, content, state.handler_state) do
-      {:reply, response, handler_state} ->
-        {response, handler_state}
-
-      {:send, to, message, handler_state} ->
-        route_message(state.swarm_name, state.name, to, message)
-        {nil, handler_state}
-
-      {:broadcast, message, handler_state} ->
-        Router.broadcast(state.swarm_name, state.name, message)
-        {nil, handler_state}
-
-      {:noreply, handler_state} ->
-        {nil, handler_state}
-
-      {:multi, messages, handler_state} ->
-        Enum.each(messages, fn
-          {:send, to, msg} -> route_message(state.swarm_name, state.name, to, msg)
-          {:broadcast, msg} -> Router.broadcast(state.swarm_name, state.name, msg)
-        end)
-
-        {nil, handler_state}
-
-      {:send_many, messages, handler_state} ->
-        Enum.each(messages, fn
-          {:send, to, msg} -> route_message(state.swarm_name, state.name, to, msg)
-          {:broadcast, msg} -> Router.broadcast(state.swarm_name, state.name, msg)
-          {to, msg} -> route_message(state.swarm_name, state.name, to, msg)
-        end)
-
-        {nil, handler_state}
-
-      other ->
-        # An unknown return shape would otherwise CaseClauseError and strand
-        # the asker for its full timeout.
-        {{:handler_error, "unexpected handler return: #{inspect(other)}"}, state.handler_state}
-    end
   end
 
   # Hand the envelope to the asking agent's server, which owns the workspace
